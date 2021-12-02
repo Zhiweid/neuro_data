@@ -599,12 +599,12 @@ class TrainClass(dj.Lookup):
         return tables
 
 
-@h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-          file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
+# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
 # @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
 #           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
-# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
+@h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+          file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
 @schema
 class InputResponse(dj.Computed, FilterMixin):
     definition = """
