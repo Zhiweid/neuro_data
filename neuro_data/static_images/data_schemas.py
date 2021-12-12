@@ -6,6 +6,7 @@ from pprint import pformat
 import datajoint as dj
 import numpy as np
 import pandas as pd
+import warnings
 
 from neuro_data import logger as log
 from neuro_data.utils.data import h5cached, SplineCurve, FilterMixin, fill_nans, NaNSpline
@@ -164,7 +165,7 @@ class ImageNetSplit(dj.Lookup):
         unique_oracle = dj.U('image_class', 'image_id') & oracle_rel
         num_oracles = len(unique_oracle)
         if num_oracles == 0:
-            raise ValueError('Could not find repeated frames to use for oracle.')
+            warnings.warn('Could not find repeated frames to use for oracle.')
         if len(unique_oracle & {'image_class': 'imagenet'}) > 0:
             nat_oracle_ids = (unique_oracle & {'image_class': 'imagenet'}).fetch('image_id')
             self.insert([{'image_id': iid, 'image_class': 'imagenet', 'tier': 'test'} for iid in nat_oracle_ids], skip_duplicates=True)
@@ -599,12 +600,12 @@ class TrainClass(dj.Lookup):
         return tables
 
 
-# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
+@h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+          file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
 # @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
 #           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
-@h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-          file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
+# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
 @schema
 class InputResponse(dj.Computed, FilterMixin):
     definition = """
