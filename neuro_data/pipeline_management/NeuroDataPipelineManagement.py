@@ -1,9 +1,8 @@
 import numpy as np
 import datajoint as dj
 
-
-# from neuro_data.static_images.data_schemas import StaticScanCandidate, StaticScan, TempImageNetSplit, ImageNetSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial
-from neuro_data.static_images.zd_neurodata import StaticScanCandidate, StaticScan, SubsetImageNetSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial
+from neuro_data.static_images.data_schemas import StaticScanCandidate, StaticScan, TempImageNetSplit, ImageNetSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial
+# from neuro_data.static_images.zd_neurodata import StaticScanCandidate, StaticScan, SubsetImageNetSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial
 
 pipeline_anatomy = dj.create_virtual_module('pipeline_anatomy', 'pipeline_anatomy')
 pipeline_fuse = dj.create_virtual_module('pipeline_fuse', 'pipeline_fuse')
@@ -114,7 +113,7 @@ class NeuroDataPipelineManagement():
                     
                     if user_input == 'y':
                         layer = input('Input layer to label neurons with [type exit to cancel]:')
-                        while layer not in ['L1', 'L2/3', 'L4']:
+                        while layer not in ['L1', 'L2/3', 'L4', 'L6']:
                             if layer == 'exit':
                                 return
                             print('Invalid Layer!')
@@ -152,59 +151,65 @@ class NeuroDataPipelineManagement():
 
 #             # Populating TempImageNetSplit
 #             print("[NeuroData.Static Populate]: Populating TempImageNetSplit:")
-#             TempImageNetSplit().fill(target_scan_done_key)
+# #             TempImageNetSplit().fill(target_scan_done_key)
+#             SubsetImageNetSplit().fill(target_scan_done_key, 15)
 
-# # #             # Populating ImageNetSplit
-# # #             print("[NeuroData.Static Populate]: Populating ImageNetSplit:")
-# # #             ImageNetSplit().fill(target_scan_done_key)
+            # Populating ImageNetSplit
+            print("[NeuroData.Static Populate]: Populating ImageNetSplit:")
+            ImageNetSplit().fill(target_scan_done_key)
 
-#             # Populate ConditionTier
-#             print("[NeuroData.Static Populate]: Populating ConditionTier:")
-#             ConditionTier.populate(target_scan_done_key)
+            # Populate ConditionTier
+            print("[NeuroData.Static Populate]: Populating ConditionTier:")
+            ConditionTier.populate(target_scan_done_key)
+#             ConditionTier.populate(target_scan_done_key, 'subset_id in (15)')
 
-#             # Check for incorrect flip times
-#             print("[NeuroData.Static Populate]: Checking for Incorrect Flip Times:")
-#             trials = (pipeline_stimulus.Trial() & target_scan).proj('flip_times').fetch(as_dict=True)
-#             for trial in trials:
-#                 if trial['flip_times'].shape[1] != 3: # correct number of flips, hardcoded
-#                     ExcludedTrial.insert1(trial, ignore_extra_fields=True)
+            # Check for incorrect flip times
+            print("[NeuroData.Static Populate]: Checking for Incorrect Flip Times:")
+            trials = (pipeline_stimulus.Trial() & target_scan).proj('flip_times').fetch(as_dict=True)
+            for trial in trials:
+                if trial['flip_times'].shape[1] != 3: # correct number of flips, hardcoded
+                    ExcludedTrial.insert1(trial, ignore_extra_fields=True, skip_duplicates=True)
 
-#             preproc_ids = [5]
-#             for preproc in preproc_ids:
-#                 # Populate Frame
-#                 print("[NeuroData.Static Populate]: Populating Frame:")
-#                 with DisableLogger():
-#                     Frame.populate(dict(preproc_id = preproc))
+            preproc_ids = [5]
+            for preproc in preproc_ids:
+                # Populate Frame
+                print("[NeuroData.Static Populate]: Populating Frame:")
+                with DisableLogger():
+                    Frame.populate(dict(preproc_id = preproc), ConditionTier & target_scan)
 
-#                 # Populate InputResponse
-#                 print("[NeuroData.Static Populate]: Populating InputResponse:")
-#                 InputResponse().populate(target_scan_done_key, [dict(preproc_id = preproc)])
+                # Populate InputResponse
+                print("[NeuroData.Static Populate]: Populating InputResponse:")
+                InputResponse().populate(target_scan_done_key, [dict(preproc_id = preproc)])
 
-#                 # Populate Eye
-#                 print("[NeuroData.Static Populate]: Populating Eye:")
-#                 Eye().populate(target_scan_done_key, dict(preproc_id = preproc))
+                # Populate Eye
+                print("[NeuroData.Static Populate]: Populating Eye:")
+                Eye().populate(target_scan_done_key, dict(preproc_id = preproc))
 
-#                 # Populate Treadmill
-#                 print("[NeuroData.Static Populate]: Populating Treadmill:")
-#                 Treadmill().populate(target_scan_done_key, dict(preproc_id = preproc))
+                # Populate Treadmill
+                print("[NeuroData.Static Populate]: Populating Treadmill:")
+                Treadmill().populate(target_scan_done_key, dict(preproc_id = preproc))
 
-#                 # Insert Scan into StaticMultiDatasetGroupAssignment with whatever is the next highest_group_id
-#                 print("[NeuroData.Static Populate]: Inserting Scan into StaticMultiDatasetGroupAssignment with next largest group_id:")
-#                 target_input_response_key = (InputResponse & target_scan & dict(preproc_id = preproc)).fetch1('KEY')
-#                 if StaticMultiDatasetGroupAssignment & target_input_response_key:
-#                     print("[NeuroData.Static Populate]: Scan is already in StaticMultiDatasetGroupAssignment, skipping")
-#                 else:
-#                     target_input_response_key['group_id'] = StaticMultiDatasetGroupAssignment().fetch('group_id').max() + 1
-#                     target_input_response_key['description'] = 'Inserted from PipelineManagement'
-#                     StaticMultiDatasetGroupAssignment.insert1(target_input_response_key)
+                # Insert Scan into StaticMultiDatasetGroupAssignment with whatever is the next highest_group_id
+                print("[NeuroData.Static Populate]: Inserting Scan into StaticMultiDatasetGroupAssignment with next largest group_id:")
+                target_input_response_key = (InputResponse & target_scan & dict(preproc_id = preproc)).fetch1('KEY')
+                if StaticMultiDatasetGroupAssignment & target_input_response_key:
+                    print("[NeuroData.Static Populate]: Scan is already in StaticMultiDatasetGroupAssignment, skipping")
+                else:
+                    target_input_response_key['group_id'] = StaticMultiDatasetGroupAssignment().fetch('group_id').max() + 1
+                    target_input_response_key['description'] = 'Inserted from PipelineManagement'
+                    StaticMultiDatasetGroupAssignment.insert1(target_input_response_key)
+                
+                # Fill StaticMultiDataset
+                print("[NeuroData.Static Populate]: Filling StaticMultiDataset:")
+                StaticMultiDataset().fill()
+#                 gid = StaticMultiDatasetGroupAssignment().fetch('group_id').max()
+#                 StaticMultiDataset().fill({'group_id': gid, 'subset_id': 15})                
 
-#                 # Fill StaticMultiDataset
-#                 print("[NeuroData.Static Populate]: Filling StaticMultiDataset:")
-#                 StaticMultiDataset().fill()
-
-#                 print('[NeuroData.Static Populate]: Generating HDF5 File')
-#                 InputResponse().get_filename({**target_scan, 'preproc_id':preproc})            
-
+                print('[NeuroData.Static Populate]: Generating HDF5 File')
+                InputResponse().get_filename({**target_scan, 'preproc_id':preproc})   
+#                 keys = (StaticMultiDataset.Member & target_scan).fetch('KEY')
+#                 for key in keys:
+#                     InputResponse().get_filename(key)
 #                 print('[PROCESSING COMPLETED FOR SCAN: ' + str(target_scan) + ']\n')
 
     def delete_scans_from_pipeline(self, target_scans):
