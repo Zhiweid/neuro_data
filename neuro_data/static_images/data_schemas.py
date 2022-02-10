@@ -89,12 +89,12 @@ class StaticScan(dj.Computed):
         self.insert(fuse.ScanDone() & key, ignore_extra_fields=True)
         pipe = (fuse.ScanDone() & key).fetch1('pipe')
         pipe = dj.create_virtual_module(pipe, 'pipeline_' + pipe)
-#         self.Unit().insert(fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
-#                            & dict(pipe_version=1, segmentation_method=6, spike_method=5, type='soma'),
-#                            ignore_extra_fields=True)
         self.Unit().insert(fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
-                           & dict(pipe_version=1, segmentation_method=6, spike_method=6, type='soma'),
+                           & dict(pipe_version=1, segmentation_method=6, spike_method=5, type='soma'),
                            ignore_extra_fields=True)
+#         self.Unit().insert(fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
+#                            & dict(pipe_version=1, segmentation_method=6, spike_method=6, type='soma'),
+#                            ignore_extra_fields=True)
 
 
 @schema
@@ -156,12 +156,12 @@ class ImageNetSplit(dj.Lookup):
             print('Static images were not shown for this scan')
         
         # Get all image ids in this scan
-        all_frames = frame_table * stimulus.Trial & scan_key & IMAGE_CLASSES
+        all_frames = frame_table * stimulus.Trial & scan_key & IMAGE_CLASSES & (imagenet.Album.Single & 'collection_id <= 20')
         unique_frames = dj.U('image_id', 'image_class').aggr(all_frames, repeats='COUNT(*)')
         assert len(unique_frames) != 0, 'unique_frames == 0'
         
         # Assign test set images
-        oracle_rel = stimulus.Trial * stimulus.Frame & scan_key & ORACLE_TABLES
+        oracle_rel = stimulus.Trial * stimulus.Frame & scan_key & ORACLE_TABLES & (imagenet.Album.Oracle & 'collection_id <= 20')
         unique_oracle = dj.U('image_class', 'image_id') & oracle_rel
         num_oracles = len(unique_oracle)
         if num_oracles == 0:
@@ -422,7 +422,7 @@ class ConditionTier(dj.Computed):
                 self.insert(StaticScan * frame_table * assignment & (stimulus.Trial & key), ignore_extra_fields=True, skip_duplicates=True)
 
                 # make sure that all frames were assigned
-                remaining = (stimulus.Trial * frame_table & key) - self
+                remaining = (stimulus.Trial * frame_table & key & (imagenet.Album.Single & 'collection_id <= 20')) - self
                 assert len(remaining) == 0, 'There are still unprocessed Frames'
                 
                 # make sure there is no overlap between train and test set
@@ -433,7 +433,11 @@ class ConditionTier(dj.Computed):
                 continue
                 
             log.info('Checking condition {stimulus_type} (n={count})'.format(**cond))
-            frames = (stimulus.Condition() * StaticScan() & key & cond).aggr(stimulus.Trial(), repeats="count(*)",
+            if cond['stimulus_type'] == 'stimulus.Frame':
+                frames = (stimulus.Condition() * StaticScan() & key & cond).aggr(stimulus.Trial * frame_table & (imagenet.Album.Single & 'collection_id <= 20'), repeats="count(*)",
+                                                                             test='count(*) > 4')
+            else:
+                frames = (stimulus.Condition() * StaticScan() & key & cond).aggr(stimulus.Trial, repeats="count(*)",
                                                                              test='count(*) > 4')
             self.check_train_test_split(frames, cond)
 
@@ -497,6 +501,15 @@ def process_frame(preproc_key, frame):
     return cv2.resize(frame, imgsize, interpolation=cv2.INTER_AREA).astype(np.float32)
 
 
+# @schema
+# class Frame(dj.Computed):
+#     definition = """ # frames downsampled
+
+#     -> stimulus.Condition
+#     -> Preprocessing
+#     ---
+#     frame                : blob@data   # frame processed
+#     """
 @schema
 class Frame(dj.Computed):
     definition = """ # frames downsampled
@@ -600,6 +613,48 @@ class TrainClass(dj.Lookup):
         return tables
 
 
+# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
+# @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
+#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
+# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
+# @schema
+# class InputResponse(dj.Computed, FilterMixin):
+#     definition = """
+#     # responses of one neuron to the stimulus
+
+#     -> StaticScan
+#     -> Preprocessing
+#     ---
+#     """
+
+#     key_source = StaticScan() * Preprocessing() #& Frame()
+
+#     class Input(dj.Part):
+#         definition = """
+#             -> master
+#             -> stimulus.Trial
+#             -> Frame
+#             ---
+#             row_id           : int             # row id in the response block
+#             """
+
+#     class ResponseBlock(dj.Part):
+#         definition = """
+#             -> master
+#             ---
+#             responses           : blob@data   # response of one neurons for all bins
+#             """
+
+#     class ResponseKeys(dj.Part):
+#         definition = """
+#             -> master.ResponseBlock
+#             -> fuse.Activity.Trace
+#             ---
+#             col_id           : int             # col id in the response block
+#             """
+
 @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
 # @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
@@ -616,7 +671,7 @@ class InputResponse(dj.Computed, FilterMixin):
     ---
     """
 
-    key_source = StaticScan() * Preprocessing() & Frame()
+    key_source = StaticScan() * Preprocessing() #& Frame()
 
     class Input(dj.Part):
         definition = """
@@ -1136,6 +1191,19 @@ class BehaviorMixin:
         return v.squeeze(), t.squeeze()
 
 
+# @schema
+# class Eye(dj.Computed, FilterMixin, BehaviorMixin):
+#     definition = """
+#     # eye movement data
+
+#     -> InputResponse
+#     ---
+#     -> pupil.FittedPupil                 # tracking_method as a secondary attribute
+#     pupil              : blob@data   # pupil dilation trace
+#     dpupil             : blob@data   # derivative of pupil dilation trace
+#     center             : blob@data   # center position of the eye
+#     valid              : blob@data   # valid trials
+#     """
 @schema
 class Eye(dj.Computed, FilterMixin, BehaviorMixin):
     definition = """
@@ -1211,6 +1279,17 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
         self.insert1(dict(scan_key, pupil=pupil, dpupil=dpupil, center=center, valid=valid))
 
 
+# @schema
+# class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
+#     definition = """
+#     # eye movement data
+
+#     -> InputResponse
+#     -> treadmill.Treadmill
+#     ---
+#     treadmill          : blob@data   # treadmill speed (|velcolity|)
+#     valid              : blob@data   # valid trials
+#     """
 @schema
 class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
     definition = """
@@ -1222,7 +1301,6 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
     treadmill          : external-data   # treadmill speed (|velcolity|)
     valid              : external-data   # valid trials
     """
-
     @property
     def key_source(self):
         rel = InputResponse
