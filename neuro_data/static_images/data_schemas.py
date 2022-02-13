@@ -12,7 +12,12 @@ from neuro_data import logger as log
 from neuro_data.utils.data import h5cached, SplineCurve, FilterMixin, fill_nans, NaNSpline
 from neuro_data.static_images import datasets
 
-dj.config['external-data'] = {'protocol': 'file', 'location': '/external/'}
+dj.config.setdefault('stores', dict())
+dj.config['stores'].update({
+    'data': dict(
+        protocol='file', 
+        location='/external')
+})
 
 experiment = dj.create_virtual_module('experiment', 'pipeline_experiment')
 reso = dj.create_virtual_module('reso', 'pipeline_reso')
@@ -501,15 +506,6 @@ def process_frame(preproc_key, frame):
     return cv2.resize(frame, imgsize, interpolation=cv2.INTER_AREA).astype(np.float32)
 
 
-# @schema
-# class Frame(dj.Computed):
-#     definition = """ # frames downsampled
-
-#     -> stimulus.Condition
-#     -> Preprocessing
-#     ---
-#     frame                : blob@data   # frame processed
-#     """
 @schema
 class Frame(dj.Computed):
     definition = """ # frames downsampled
@@ -517,7 +513,7 @@ class Frame(dj.Computed):
     -> stimulus.Condition
     -> Preprocessing
     ---
-    frame                : external-data   # frame processed
+    frame                : blob@data   # frame processed
     """
 
     @property
@@ -613,48 +609,6 @@ class TrainClass(dj.Lookup):
         return tables
 
 
-# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
-# @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
-#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
-# @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
-#           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
-# @schema
-# class InputResponse(dj.Computed, FilterMixin):
-#     definition = """
-#     # responses of one neuron to the stimulus
-
-#     -> StaticScan
-#     -> Preprocessing
-#     ---
-#     """
-
-#     key_source = StaticScan() * Preprocessing() #& Frame()
-
-#     class Input(dj.Part):
-#         definition = """
-#             -> master
-#             -> stimulus.Trial
-#             -> Frame
-#             ---
-#             row_id           : int             # row id in the response block
-#             """
-
-#     class ResponseBlock(dj.Part):
-#         definition = """
-#             -> master
-#             ---
-#             responses           : blob@data   # response of one neurons for all bins
-#             """
-
-#     class ResponseKeys(dj.Part):
-#         definition = """
-#             -> master.ResponseBlock
-#             -> fuse.Activity.Trace
-#             ---
-#             col_id           : int             # col id in the response block
-#             """
-
 @h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}.h5')
 # @h5cached('/src/static-networks/my_notebooks/', mode='array', transfer_to_tmp=False,
@@ -686,7 +640,7 @@ class InputResponse(dj.Computed, FilterMixin):
         definition = """
             -> master
             ---
-            responses           : external-data   # response of one neurons for all bins
+            responses           : blob@data   # response of one neurons for all bins
             """
 
     class ResponseKeys(dj.Part):
@@ -1191,19 +1145,6 @@ class BehaviorMixin:
         return v.squeeze(), t.squeeze()
 
 
-# @schema
-# class Eye(dj.Computed, FilterMixin, BehaviorMixin):
-#     definition = """
-#     # eye movement data
-
-#     -> InputResponse
-#     ---
-#     -> pupil.FittedPupil                 # tracking_method as a secondary attribute
-#     pupil              : blob@data   # pupil dilation trace
-#     dpupil             : blob@data   # derivative of pupil dilation trace
-#     center             : blob@data   # center position of the eye
-#     valid              : blob@data   # valid trials
-#     """
 @schema
 class Eye(dj.Computed, FilterMixin, BehaviorMixin):
     definition = """
@@ -1212,10 +1153,10 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
     -> InputResponse
     ---
     -> pupil.FittedPupil                 # tracking_method as a secondary attribute
-    pupil              : external-data   # pupil dilation trace
-    dpupil             : external-data   # derivative of pupil dilation trace
-    center             : external-data   # center position of the eye
-    valid              : external-data   # valid trials
+    pupil              : blob@data   # pupil dilation trace
+    dpupil             : blob@data   # derivative of pupil dilation trace
+    center             : blob@data   # center position of the eye
+    valid              : blob@data   # valid trials
     """
 
     @property
@@ -1279,17 +1220,6 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
         self.insert1(dict(scan_key, pupil=pupil, dpupil=dpupil, center=center, valid=valid))
 
 
-# @schema
-# class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
-#     definition = """
-#     # eye movement data
-
-#     -> InputResponse
-#     -> treadmill.Treadmill
-#     ---
-#     treadmill          : blob@data   # treadmill speed (|velcolity|)
-#     valid              : blob@data   # valid trials
-#     """
 @schema
 class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
     definition = """
@@ -1298,8 +1228,8 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
     -> InputResponse
     -> treadmill.Treadmill
     ---
-    treadmill          : external-data   # treadmill speed (|velcolity|)
-    valid              : external-data   # valid trials
+    treadmill          : blob@data   # treadmill speed (|velcolity|)
+    valid              : blob@data   # valid trials
     """
     @property
     def key_source(self):
