@@ -663,7 +663,9 @@ class InputResponse(dj.Computed, FilterMixin):
 
         soma = pipe.MaskClassification.Type() & dict(type='soma')
 
-        spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * StaticScan.Unit() \
+        # spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * StaticScan.Unit() \
+        #           * pipe.ScanSet.UnitInfo() & soma & key)
+        spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * pipe.ScanSet.Unit() \
                   * pipe.ScanSet.UnitInfo() & soma & key)
         traces, ms_delay, trace_keys = spikes.fetch('trace', 'ms_delay', dj.key,
                                                     order_by='animal_id, session, scan_idx, unit_id')
@@ -714,37 +716,64 @@ class InputResponse(dj.Computed, FilterMixin):
 
     def make(self, scan_key):
         self.insert1(scan_key)
-        # integration window size for responses
-        duration, offset = map(float, (Preprocessing() & scan_key).fetch1('duration', 'offset'))
-        sample_point = offset + duration / 2
 
-        log.info('Sampling neural responses at {}s intervals'.format(duration))
+        # Hack to back insert from h5 file for dataset generated digital twin or any source other than the real brain
+        preproc_params = (Preprocessing & scan_key).fetch1()
+        if preproc_params['data_source'] != 'brain':
+            base_key = scan_key.copy()
+            base_key.pop('preproc_id')
+            base_params = preproc_params.copy()
+            for k in ['preproc_id', 'data_source']:
+                base_params.pop(k)
+            brain_params = (Preprocessing & base_params & 'data_source = "brain"' & 'preproc_id != 100').proj().fetch1()
+            input_tuples = (self.Input & base_key & brain_params).fetch(as_dict=True)
+            unit_tuples = (self.ResponseKeys & base_key & brain_params).fetch(as_dict=True)
+            for it in input_tuples:
+                it['preproc_id'] = scan_key['preproc_id']
+            for ut in unit_tuples:
+                ut['preproc_id'] = scan_key['preproc_id']
 
-        trace_spline, trace_keys, ftmin, ftmax = self.get_trace_spline(scan_key, duration)
-        # exclude trials marked in ExcludedTrial
-        log.info('Excluding {} trials based on ExcludedTrial'.format(len(ExcludedTrial() & scan_key)))
-        flip_times, trial_keys = (Frame * (stimulus.Trial - ExcludedTrial) & scan_key).fetch('flip_times', dj.key,
-                                                                           order_by='condition_hash')
-        flip_times = [ft.squeeze() for ft in flip_times]
+            # Get responses from h5 file
+            import h5py
+            h5_name = '/external/cache/static{}-{}-{}-preproc{}.h5'.format(scan_key['animal_id'], scan_key['session'], scan_key['scan_idx'], scan_key['preproc_id'])
+            with h5py.File(h5_name, "r") as f:
+                self.ResponseBlock.insert1(dict(**scan_key, responses=f['responses'][()]))
+            self.Input.insert(input_tuples)
+            self.ResponseKeys.insert(unit_tuples)
+            
+        else:
 
-        # If no Frames are present, skip this scan
-        if len(flip_times) == 0:
-            log.warning('No static frames were present to be processed for {}'.format(scan_key))
-            return
+            # integration window size for responses
+            duration, offset = map(float, (Preprocessing() & scan_key).fetch1('duration', 'offset'))
+            sample_point = offset + duration / 2
 
-        valid = np.array([ft.min() >= ftmin and ft.max() <= ftmax for ft in flip_times], dtype=bool)
-        if not np.all(valid):
-            log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
-                (~valid).sum()))
+            log.info('Sampling neural responses at {}s intervals'.format(duration))
 
-        stimulus_onset = self.stimulus_onset(flip_times, duration)
-        log.info('Sampling {} responses {}s after stimulus onset'.format(valid.sum(), sample_point))
-        R = trace_spline(stimulus_onset[valid] + sample_point, log=True).T
+            trace_spline, trace_keys, ftmin, ftmax = self.get_trace_spline(scan_key, duration)
+            # exclude trials marked in ExcludedTrial
+            log.info('Excluding {} trials based on ExcludedTrial'.format(len(ExcludedTrial() & scan_key)))
+            flip_times, trial_keys = (Frame * (stimulus.Trial - ExcludedTrial) & scan_key).fetch('flip_times', dj.key,
+                                                                            order_by='condition_hash')
+            flip_times = [ft.squeeze() for ft in flip_times]
 
-        self.ResponseBlock.insert1(dict(scan_key, responses=R))
-        self.ResponseKeys.insert([dict(scan_key, **trace_key, col_id=i) for i, trace_key in enumerate(trace_keys)])
-        self.Input.insert([dict(scan_key, **trial_key, row_id=i)
-                           for i, trial_key in enumerate(compress(trial_keys, valid))])
+            # If no Frames are present, skip this scan
+            if len(flip_times) == 0:
+                log.warning('No static frames were present to be processed for {}'.format(scan_key))
+                return
+
+            valid = np.array([ft.min() >= ftmin and ft.max() <= ftmax for ft in flip_times], dtype=bool)
+            if not np.all(valid):
+                log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
+                    (~valid).sum()))
+
+            stimulus_onset = self.stimulus_onset(flip_times, duration)
+            log.info('Sampling {} responses {}s after stimulus onset'.format(valid.sum(), sample_point))
+            R = trace_spline(stimulus_onset[valid] + sample_point, log=True).T
+
+            self.ResponseBlock.insert1(dict(scan_key, responses=R))
+            self.ResponseKeys.insert([dict(scan_key, **trace_key, col_id=i) for i, trace_key in enumerate(trace_keys)])
+            self.Input.insert([dict(scan_key, **trial_key, row_id=i)
+                            for i, trial_key in enumerate(compress(trial_keys, valid))])
 
     def compute_data(self, key):
         key = dict((self & key).fetch1(dj.key), **key)
@@ -920,6 +949,8 @@ class InputResponse(dj.Computed, FilterMixin):
             train_std = np.mean(im_std).astype(np.float32)
 
             return train_mean, train_std
+        
+        print('Computing training statistics')
         train_mean, train_std = compute_train_stats(key, trials)
 
         # --- extract infomation for each trial
