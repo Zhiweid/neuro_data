@@ -92,15 +92,11 @@ class StaticScan(dj.Computed):
 
     def make(self, key):
         self.insert(fuse.ScanDone() & key, ignore_extra_fields=True)
-        pipe = (fuse.ScanDone() & key).fetch1('pipe')
+        pipe, spike_method = (fuse.ScanDone() & key).fetch1('pipe', 'spike_method')
         pipe = dj.create_virtual_module(pipe, 'pipeline_' + pipe)
         self.Unit().insert(fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
-                           & dict(pipe_version=1, segmentation_method=6, spike_method=5, type='soma'),
+                           & dict(pipe_version=1, segmentation_method=6, spike_method=spike_method, type='soma'),
                            ignore_extra_fields=True)
-#         self.Unit().insert(fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
-#                            & dict(pipe_version=1, segmentation_method=6, spike_method=6, type='soma'),
-#                            ignore_extra_fields=True)
-
 
 @schema
 class Tier(dj.Lookup):
@@ -487,9 +483,9 @@ class Preprocessing(dj.Lookup):
         {'preproc_id': 3, 'offset': 0.05, 'duration': 0.5, 'row': 36, 'col': 64,
          'filter': 'hamming', 'gamma': True},        
         {'preproc_id': 5, 'offset': 0.05, 'duration': 0.5, 'row': 36, 'col': 64,
-         'filter': 'hamming', 'gamma': True, 'trainstats_per_image': 1, 'linear_mon': 0}, 
+         'filter': 'hamming', 'gamma': True, 'stats_per_input': 1, 'linear_mon': 0}, 
         {'preproc_id': 6, 'offset': 0.05, 'duration': 0.5, 'row': 36, 'col': 64,
-         'filter': 'hamming', 'gamma': True, 'trainstats_per_image': 1, 'linear_mon': 1}, 
+         'filter': 'hamming', 'gamma': True, 'stats_per_input': 1, 'linear_mon': 1}, 
     ]
 
         
@@ -862,8 +858,8 @@ class InputResponse(dj.Computed, FilterMixin):
             
         # Compute training set mean and std (now only implemented when the only one unique type is stimulus.Frame)
         def compute_train_stats(key, trials):
-            train_cond_rel = stimulus.Frame * trials & 'tier = "train"'
-            train_classes = (dj.U('image_class') & train_cond_rel).fetch('image_class')
+            train_cond_rel = trials & 'tier = "train"'
+            train_classes = (dj.U('image_class') & (stimulus.Frame * train_cond_rel)).fetch('image_class')
 
             train_masks = []
             train_frames = []
@@ -882,7 +878,7 @@ class InputResponse(dj.Computed, FilterMixin):
                     assert (useful_tables == 1), 'The current training image class exist in none or multiple tables defined in TrainClass!'
 
                 elif c in FF_CLASSES or c in Konsti_CLASSES:
-                    frames = (stimulus.Frame * trials & {'image_class': c}).fetch('frame')
+                    frames = (stimulus.Frame * train_cond_rel & {'image_class': c}).fetch('frame')
                     masks = [np.ones(frames[0].shape)] * len(frames)
                 train_masks.append(np.stack(masks))
                 train_frames.append(np.stack(frames))
@@ -924,7 +920,6 @@ class InputResponse(dj.Computed, FilterMixin):
                 moncalib_on_key = dict(animal_id=24620, session=4, scan_idx=18)
                 pdcalib_on_key = dict(rig="2p4", trial=8)
                 _, _, f, f_inv = get_gamma_function(moncalib_on_key, pdcalib_on_key)
-            
 
                 train_frames = f(train_frames)
 
@@ -1096,7 +1091,7 @@ class InputResponse(dj.Computed, FilterMixin):
         # --- compute statistics
         log.info('Computing statistics on training dataset')
         response_statistics = run_stats(lambda ix: responses[ix], types, tiers == 'train', axis=0)
-        if (Preprocessing & key).fetch1('trainstats_per_image'):
+        if (Preprocessing & key).fetch1('stats_per_input'):
             log.info('Computing training input statistics by averaging across the values computed for individual images')
             input_statistics = run_input_stats(lambda ix: images[ix], types, tiers == 'train')
         else:

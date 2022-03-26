@@ -170,7 +170,7 @@ class NeuroDataPipelineManagement():
                 if trial['flip_times'].shape[1] != 3: # correct number of flips, hardcoded
                     ExcludedTrial.insert1(trial, ignore_extra_fields=True, skip_duplicates=True)
 
-            preproc_ids = [5]
+            preproc_ids = [9]
             for preproc in preproc_ids:
                 # Populate Frame
                 print("[NeuroData.Static Populate]: Populating Frame:")
