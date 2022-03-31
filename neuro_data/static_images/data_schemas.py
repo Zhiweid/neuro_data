@@ -692,7 +692,7 @@ class InputResponse(dj.Computed, FilterMixin):
         return trace_spline, trace_keys, frame_times.min(), frame_times.max()
 
     @staticmethod
-    def stimulus_onset(flip_times, duration):
+    def stimulus_onset(flip_times, stimulus_duration):
         n_ft = np.unique([ft.size for ft in flip_times])
         assert len(n_ft) == 1, 'Found inconsistent number of fliptimes'
         n_ft = int(n_ft)
@@ -703,9 +703,9 @@ class InputResponse(dj.Computed, FilterMixin):
         stimulus_onset = np.vstack(flip_times)  # columns correspond to  clear flip, onset flip
         ft = stimulus_onset[np.argsort(stimulus_onset[:, 0])]
         if n_ft == 2:
-            assert np.median(ft[1:, 0] - ft[:-1, 1]) < duration + 0.05, 'stimulus duration off by more than 50ms'
+            assert np.array([(ft[1:, 0] - ft[:-1, 1]) < d + 0.05 for d in stimulus_duration]).all(), 'stimulus duration off by more than 50ms'
         else:
-            assert np.median(ft[:, 2] - ft[:, 1]) < duration + 0.05, 'stimulus duration off by more than 50ms'
+            assert np.array([(ft[:, 2] - ft[:, 1]) < d + 0.05 for d in stimulus_duration]).all(), 'stimulus duration off by more than 50ms'
         stimulus_onset = stimulus_onset[:, 1]
 
         return stimulus_onset
@@ -748,7 +748,7 @@ class InputResponse(dj.Computed, FilterMixin):
             trace_spline, trace_keys, ftmin, ftmax = self.get_trace_spline(scan_key, duration)
             # exclude trials marked in ExcludedTrial
             log.info('Excluding {} trials based on ExcludedTrial'.format(len(ExcludedTrial() & scan_key)))
-            flip_times, trial_keys = (Frame * (stimulus.Trial - ExcludedTrial) & scan_key).fetch('flip_times', dj.key,
+            flip_times, trial_keys, stimulus_duration = (Frame * (stimulus.Trial - ExcludedTrial) * stimulus.Frame.proj('presentation_time') & scan_key).fetch('flip_times', dj.key, 'presentation_time', 
                                                                             order_by='condition_hash')
             flip_times = [ft.squeeze() for ft in flip_times]
 
@@ -762,7 +762,7 @@ class InputResponse(dj.Computed, FilterMixin):
                 log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
                     (~valid).sum()))
 
-            stimulus_onset = self.stimulus_onset(flip_times, duration)
+            stimulus_onset = self.stimulus_onset(flip_times, stimulus_duration)
             log.info('Sampling {} responses {}s after stimulus onset'.format(valid.sum(), sample_point))
             R = trace_spline(stimulus_onset[valid] + sample_point, log=True).T
 
@@ -1221,7 +1221,7 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
                                     np.vstack([np.convolve(coord, h_eye, mode='same') for coord in xy]),
                                     k=1, ext=0)
 
-        flip_times = (InputResponse.Input * Frame * stimulus.Trial & scan_key).fetch('flip_times',
+        flip_times, stimulus_duration = (InputResponse.Input * Frame * stimulus.Frame.proj('presentation_time') * stimulus.Trial & scan_key).fetch('flip_times', 'presentation_time',
                                                                                      order_by='row_id ASC')
 
         flip_times = [ft.squeeze() for ft in flip_times]
@@ -1231,7 +1231,7 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
             log.warning('No static frames were present to be processed for {}'.format(scan_key))
             return
 
-        stimulus_onset = InputResponse.stimulus_onset(flip_times, duration)
+        stimulus_onset = InputResponse.stimulus_onset(flip_times, stimulus_duration)
         t = fr2beh(stimulus_onset + sample_point)
         pupil = pupil_spline(t)
         dpupil = dpupil_spline(t)
@@ -1284,7 +1284,7 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
         h_tread = self.get_filter(duration, np.nanmedian(np.diff(treadmill_time)), 'hamming', warning=True)
         treadmill_spline = NaNSpline(treadmill_time, np.abs(np.convolve(v, h_tread, mode='same')), k=1, ext=0)
 
-        flip_times = (InputResponse.Input * Frame * stimulus.Trial & scan_key).fetch('flip_times',
+        flip_times, stimulus_duration = (InputResponse.Input * Frame * stimulus.Frame.proj('presentation_time') * stimulus.Trial & scan_key).fetch('flip_times', 'presentation_time',
                                                                                      order_by='row_id ASC')
 
         flip_times = [ft.squeeze() for ft in flip_times]
@@ -1294,7 +1294,7 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
             log.warning('No static frames were present to be processed for {}'.format(scan_key))
             return
 
-        stimulus_onset = InputResponse.stimulus_onset(flip_times, duration)
+        stimulus_onset = InputResponse.stimulus_onset(flip_times, stimulus_duration)
         tm = treadmill_spline(fr2beh(stimulus_onset + sample_point))
         valid = ~np.isnan(tm)
         if not np.all(valid):
