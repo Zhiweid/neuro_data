@@ -1,6 +1,4 @@
 from collections import OrderedDict
-from re import T
-
 import datajoint as dj
 import numpy as np
 import pandas as pd
@@ -774,21 +772,6 @@ class DatasetConfig(ConfigBase, dj.Lookup):
             )
 
     @h5cached(
-<<<<<<< HEAD
-    "/dj-stor01/cache/dynamic-static",
-    mode="array",
-    transfer_to_tmp=False,
-    file_format="dynamic-static-{animal_id}-{dynamic_session}-{dynamic_scan_idx}-{static_session}-{static_scan_idx}-{dataset_hash}.h5",
-    )
-    class DvStaticNoBehAugResp(dj.Part):
-        definition = """ # DvStaticNoBeh with augmented responses (e.g. noisy responses)
-        -> master
-        ---
-        -> DvScanInfo.proj(dynamic_session='session', dynamic_scan_idx='scan_idx')
-        -> StaticScan.proj(static_session='session', static_scan_idx='scan_idx')
-        -> InputConfig
-        -> ResponseConfig
-=======
         "/external/cache/dynamic-static-diff-animal",
         mode="array",
         transfer_to_tmp=False,
@@ -801,7 +784,6 @@ class DatasetConfig(ConfigBase, dj.Lookup):
         -> DvScanInfo.proj(dynamic_animal_id='animal_id', dynamic_session='session', dynamic_scan_idx='scan_idx')
         -> StaticScan.proj(static_animal_id='animal_id', static_session='session', static_scan_idx='scan_idx')
         -> InputConfig
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
         -> TierConfig
         -> LayerConfig
         -> AreaConfig
@@ -812,46 +794,30 @@ class DatasetConfig(ConfigBase, dj.Lookup):
 
         def describe(self, key):
             input_type = (InputConfig() & key).fetch1("input_type")
-<<<<<<< HEAD
-            response_type = (ResponseConfig() & key).fetch1("response_type")
-=======
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
             tier_type = (TierConfig() & key).fetch1("tier_type")
             layer_type = (LayerConfig() & key).fetch1("layer_type")
             area_type = (AreaConfig() & key).fetch1("area_type")
             stats_type = (StatsConfig() & key).fetch1("stats_type")
-<<<<<<< HEAD
-            desc = f"DvScanInfo|StaticScan|InputConfig.{input_type}|ResponseConfig.{response_type}|TierConfig.{tier_type}|LayerConfig.{layer_type}|AreaConfig.{area_type}|StatsConfig.{stats_type}"
-=======
             desc = f"DvScanInfo|StaticScan|InputConfig.{input_type}|TierConfig.{tier_type}|LayerConfig.{layer_type}|AreaConfig.{area_type}|StatsConfig.{stats_type}"
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
             return desc
 
         @property
         def content(self):
             from . import requests
 
-<<<<<<< HEAD
-            return requests.DynamicStaticNoBehAugRespRequest
-=======
             return requests.DynamicStaticNoBehDiffAnimalRequest
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
 
         @property
         def static_scan(self):
             """returns the scan that would be injected into InputResponse, the scan key should match the scan key returned by compute_data"""
             return (
                 StaticScan
-<<<<<<< HEAD
-                & self.proj(..., session="dynamic_session", scan_idx="dynamic_scan_idx")
-=======
                 & self.proj(
                     ...,
                     animal_id="dynamic_animal_id",
                     session="dynamic_session",
                     scan_idx="dynamic_scan_idx",
                 )
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
             ).fetch1("KEY")
 
         @property
@@ -860,11 +826,7 @@ class DatasetConfig(ConfigBase, dj.Lookup):
 
         def name(self, group_id, key=None, **kwargs):
             key = self.fetch1() if key is None else key
-<<<<<<< HEAD
-            return f'{group_id}-{key["animal_id"]}-{key["dynamic_session"]}-{key["dynamic_scan_idx"]}-{key["static_session"]}-{key["static_scan_idx"]}'
-=======
             return f'{group_id}-{key["dynamic_animal_id"]}-{key["dynamic_session"]}-{key["dynamic_scan_idx"]}-{key["static_animal_id"]}-{key["static_session"]}-{key["static_scan_idx"]}'
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
 
         def compute_data(self, key=None):
             key = self.fetch1() if key is None else (self & key).fetch1()
@@ -872,11 +834,7 @@ class DatasetConfig(ConfigBase, dj.Lookup):
                 StaticScan()
                 & {
                     **key,
-<<<<<<< HEAD
-                    "animal_id": key["animal_id"],
-=======
                     "animal_id": key["static_animal_id"],
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
                     "session": key["static_session"],
                     "scan_idx": key["static_scan_idx"],
                 }
@@ -885,11 +843,7 @@ class DatasetConfig(ConfigBase, dj.Lookup):
                 DvScanInfo()
                 & {
                     **key,
-<<<<<<< HEAD
-                    "animal_id": key["animal_id"],
-=======
                     "animal_id": key["dynamic_animal_id"],
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
                     "session": key["dynamic_session"],
                     "scan_idx": key["dynamic_scan_idx"],
                 }
@@ -899,19 +853,10 @@ class DatasetConfig(ConfigBase, dj.Lookup):
                 InputConfig().part_table(key).input(static_scan)
             )
             log.info("Fetching responses")
-<<<<<<< HEAD
-            responses = ResponseConfig().part_table(key).response(dynamic_scan, trial_idx, condition_hashes)
-
-            # (DvScanInfo & dynamic_scan).responses(
-            #     trial_idx=trial_idx,
-            #     condition_hashes=condition_hashes,
-            # )
-=======
             responses = (DvScanInfo & dynamic_scan).responses(
                 trial_idx=trial_idx,
                 condition_hashes=condition_hashes,
             )
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
             dynamic_unit_keys = (DvScanInfo & dynamic_scan).unit_keys()
             log.info("Fecthing tiers")
             tiers = TierConfig().part_table(key).tier(static_scan, condition_hashes)
@@ -952,11 +897,134 @@ class DatasetConfig(ConfigBase, dj.Lookup):
                 statistics=statistics,
             )
 
-<<<<<<< HEAD
+
+    @h5cached(
+    "/dj-stor01/cache/dynamic-static",
+    mode="array",
+    transfer_to_tmp=False,
+    file_format="dynamic-static-{animal_id}-{dynamic_session}-{dynamic_scan_idx}-{static_session}-{static_scan_idx}-{dataset_hash}.h5",
+    )
+    class DvStaticNoBehAugResp(dj.Part):
+        definition = """ # DvStaticNoBeh with augmented responses (e.g. noisy responses)
+        -> master
+        ---
+        -> DvScanInfo.proj(dynamic_session='session', dynamic_scan_idx='scan_idx')
+        -> StaticScan.proj(static_session='session', static_scan_idx='scan_idx')
+        -> InputConfig
+        -> ResponseConfig
+        -> TierConfig
+        -> LayerConfig
+        -> AreaConfig
+        -> StatsConfig
+        """
+
+        data_names = ["images", "responses"]
+
+        def describe(self, key):
+            input_type = (InputConfig() & key).fetch1("input_type")
+            response_type = (ResponseConfig() & key).fetch1("response_type")
+            tier_type = (TierConfig() & key).fetch1("tier_type")
+            layer_type = (LayerConfig() & key).fetch1("layer_type")
+            area_type = (AreaConfig() & key).fetch1("area_type")
+            stats_type = (StatsConfig() & key).fetch1("stats_type")
+            desc = f"DvScanInfo|StaticScan|InputConfig.{input_type}|ResponseConfig.{response_type}|TierConfig.{tier_type}|LayerConfig.{layer_type}|AreaConfig.{area_type}|StatsConfig.{stats_type}"
+            return desc
+
+        @property
+        def content(self):
+            from . import requests
+
+            return requests.DynamicStaticNoBehAugRespRequest
+
+        @property
+        def static_scan(self):
+            """returns the scan that would be injected into InputResponse, the scan key should match the scan key returned by compute_data"""
+            return (
+                StaticScan
+                & self.proj(..., session="dynamic_session", scan_idx="dynamic_scan_idx")
+            ).fetch1("KEY")
+
+        @property
+        def preprocessing(self):
+            return (Preprocessing & "preproc_id=8").fetch1("KEY")
+
+        def name(self, group_id, key=None, **kwargs):
+            key = self.fetch1() if key is None else key
+            return f'{group_id}-{key["animal_id"]}-{key["dynamic_session"]}-{key["dynamic_scan_idx"]}-{key["static_session"]}-{key["static_scan_idx"]}'
+
+        def compute_data(self, key=None):
+            key = self.fetch1() if key is None else (self & key).fetch1()
+            static_scan = (
+                StaticScan()
+                & {
+                    **key,
+                    "animal_id": key["animal_id"],
+                    "session": key["static_session"],
+                    "scan_idx": key["static_scan_idx"],
+                }
+            ).fetch1("KEY")
+            dynamic_scan = (
+                DvScanInfo()
+                & {
+                    **key,
+                    "animal_id": key["animal_id"],
+                    "session": key["dynamic_session"],
+                    "scan_idx": key["dynamic_scan_idx"],
+                }
+            ).fetch1("KEY")
+            log.info("Fecthing images")
+            trial_idx, condition_hashes, images, types = (
+                InputConfig().part_table(key).input(static_scan)
+            )
+            log.info("Fetching responses")
+            responses = ResponseConfig().part_table(key).response(dynamic_scan, trial_idx, condition_hashes)
+
+            # (DvScanInfo & dynamic_scan).responses(
+            #     trial_idx=trial_idx,
+            #     condition_hashes=condition_hashes,
+            # )
+            dynamic_unit_keys = (DvScanInfo & dynamic_scan).unit_keys()
+            log.info("Fecthing tiers")
+            tiers = TierConfig().part_table(key).tier(static_scan, condition_hashes)
+            log.info("Fecthing layer information")
+            layer = LayerConfig().part_table(key).layer(dynamic_unit_keys)
+            log.info("Fecthing area information")
+            area = AreaConfig().part_table(key).area(dynamic_unit_keys)
+            log.info("Computing stats")
+            statistics = (
+                StatsConfig()
+                .part_table(key)
+                .stats(condition_hashes, images, responses, tiers)
+            )
+            neurons = dict(
+                unit_ids=np.array([k["unit_id"] for k in dynamic_unit_keys]).astype(
+                    np.uint16
+                ),
+                animal_ids=np.array([k["animal_id"] for k in dynamic_unit_keys]).astype(
+                    np.uint16
+                ),
+                sessions=np.array([k["session"] for k in dynamic_unit_keys]).astype(
+                    np.uint8
+                ),
+                scan_idx=np.array([k["scan_idx"] for k in dynamic_unit_keys]).astype(
+                    np.uint8
+                ),
+                layer=layer.astype("S"),
+                area=area.astype("S"),
+            )
+            return dict(
+                images=images,
+                responses=responses,
+                types=types.astype("S"),
+                condition_hashes=condition_hashes.astype("S"),
+                trial_idx=trial_idx.astype(np.uint32),
+                neurons=neurons,
+                tiers=tiers.astype("S"),
+                statistics=statistics,
+            )
 
 
-=======
->>>>>>> 409c43759663c894e6160911c92b1c61b0449ae4
+
 
 @schema
 class DatasetInputResponse(dj.Computed):

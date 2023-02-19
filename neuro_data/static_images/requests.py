@@ -34,6 +34,18 @@ class DynamicStaticNoBehRequest(dj.Manual):
     """
 
 @schema
+class DynamicStaticNoBehDiffAnimalRequest(dj.Manual):
+    definition = """
+    -> DvScanInfo.proj(dynamic_animal_id='animal_id', dynamic_session='session', dynamic_scan_idx='scan_idx')
+    -> StaticScan.proj(static_animal_id='animal_id', static_session='session', static_scan_idx='scan_idx')
+    -> InputConfig
+    -> TierConfig
+    -> LayerConfig
+    -> AreaConfig
+    -> StatsConfig
+    """
+
+@schema
 class DynamicStaticNoBehAugRespRequest(dj.Manual):
     definition = """
     -> DvScanInfo.proj(dynamic_session='session', dynamic_scan_idx='scan_idx')

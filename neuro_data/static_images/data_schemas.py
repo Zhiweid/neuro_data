@@ -15,7 +15,7 @@ dj.config['stores'] = dict(
   **dj.config.setdefault('stores', {}),
   data=dict(
         protocol='file', 
-        location='/dj-stor01'),
+        location='/mnt/dj-stor01'),
 )
 
 experiment = dj.create_virtual_module('experiment', 'pipeline_experiment')
@@ -531,10 +531,8 @@ class InputResponse(dj.Computed, FilterMixin):
 
         soma = pipe.MaskClassification.Type() & dict(type='soma')
 
-        spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * pipe.ScanSet.Unit() \
+        spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * StaticScan.Unit() \
                   * pipe.ScanSet.UnitInfo() & soma & key)
-        # spikes = (dj.U('field', 'channel') * pipe.Activity.Trace() * StaticScan.Unit() \
-        #           * pipe.ScanSet.UnitInfo() & soma & key)
         traces, ms_delay, trace_keys = spikes.fetch('trace', 'ms_delay', dj.key,
                                                     order_by='animal_id, session, scan_idx, unit_id')
         delay = np.fromiter(ms_delay / 1000, dtype=np.float)
