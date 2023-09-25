@@ -29,7 +29,7 @@ anatomy = dj.create_virtual_module('anatomy', 'pipeline_anatomy')
 treadmill = dj.create_virtual_module('treadmill', 'pipeline_treadmill')
 base = dj.create_virtual_module("base", "neurostatic_base")
 imagenet = dj.create_virtual_module('imagenet', 'pipeline_imagenet')
-
+rendered = dj.create_virtual_module('rendered', 'pipeline_rendered_images')
 schema = dj.schema('neurodata_static')
 
 # set of attributes that uniquely identifies the frame content
@@ -40,7 +40,8 @@ UNIQUE_FRAME = {
     'stimulus.ColorFrameProjector': ('image_id', 'image_class'),
 }
 
-IMAGENET_CLASSES = 'image_class in ("imagenet", "imagenet_v2_gray", "imagenet_v2_rgb", "optimal_imagenet")' # all valid natural image classes
+IMAGENET_CLASSES = 'image_class in ("imagenet", "imagenet_v2_gray", "imagenet_v2_rgb", "optimal_imagenet", "rendered_scene")' # all valid natural image classes
+ALBUM_CLASSES = ["rendered_scene"] # all valid stimulus classes that are presented in full albums
 FF_CLASSES = ['imagenet', 'searched_nat', 'gaudy_imagenet2', 'exciting_imagenet', 'optimal_imagenet', "MEI_PC_recon_imagenet", "tue_gray_mei", "tue_gray_gabor"]
 MASKED_CLASSES = ['diverse_mei', 'mei2', 'masked_single', "mask_fixed_mei"]
 MEI_CLASSES = ['mei2', 'mask_fixed_mei']
@@ -185,14 +186,6 @@ class ImageNetSplit(dj.Lookup):
         if len(self & unique_frames) == len(unique_frames):            
             print('Fill skipped: all imagnet frames have already been assigned tiers.')
 
-            # Hack: Assign tier for MEI test images if there exists any
-            unique_mei_frames = dj.U('image_id', 'image_class').aggr(frame_table * stimulus.Trial & scan_key & [{'image_class':ic} for ic in MEI_CLASSES], repeats='COUNT(*)')
-            if len(unique_mei_frames) > 0:
-                n = int(np.median(unique_frames.fetch('repeats')))  # HACK
-                image_ids, image_classes = (unique_mei_frames & 'repeats > {}'.format(n)).fetch('image_id', 'image_class')
-                print('Inserting {} mei test images'.format(len(image_ids)))
-                self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'test_mei'} for iid, ic in
-                        zip(image_ids, image_classes)], skip_duplicates=True)
         else:
             # Get all valid imagenet images in this scan
             image_ids, image_classes = unique_frames.fetch('image_id', 'image_class', order_by='repeats DESC')
@@ -232,6 +225,85 @@ class ImageNetSplit(dj.Lookup):
                 print('Inserting {} mei test images'.format(len(image_ids)))
                 self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'test_mei'} for iid, ic in
                         zip(image_ids, image_classes)], skip_duplicates=True)
+                
+@schema
+class AlbumSplit(dj.Lookup):
+    definition = """ # split frames in a scan with a non-imagenet album into train, test, validation sets
+    -> stimulus.StaticImage.Image
+    ---
+    -> Tier
+    """
+    def fill(self, scan_key):
+        """ Assign each frame from the album in the current scan to train/test/validation set.
+
+        Arguments:
+            scan_key: An scan (animal_id, session, scan_idx) that has stimulus.Trials
+                created. Usually one where the stimulus was presented.
+
+        Note:
+            Each image is assigned to one set and that holds true for all our scans and
+            collections. Once an image has been assigned (and models have been trained
+            with that split), it cannot be changed in the future (this is problematic if
+            images are reused as those from collection 2 or collection 3 with a different
+            purpose).
+
+            The exact split assigned will depend on the scans used in fill and the order
+            that this table was filled. Not ideal.
+        """
+        # Find out whether we are using the old pipeline (grayscale only) or the new version
+        if stimulus.Frame & (stimulus.Trial & scan_key):
+            frame_table = stimulus.Frame
+        elif stimulus.ColorFrameProjector & (stimulus.Trial & scan_key):
+            frame_table = stimulus.ColorFrameProjector
+        else:
+            print('Static images were not shown for this scan')
+
+        # Skip fill if all frames have already been inserted
+        valid_rel = [rendered.Album.Oracle & rendered.ValidAlbum, rendered.Album.Single & rendered.ValidAlbum,]
+        all_frames = frame_table * stimulus.Trial & scan_key & [dict(image_class=c) for c in ALBUM_CLASSES] & valid_rel
+        unique_frames = dj.U('image_id', 'image_class').aggr(all_frames, repeats='COUNT(*)')
+        if len(self & unique_frames) == len(unique_frames):            
+            print('Fill skipped: all frames have already been assigned tiers.')
+        else:
+            # Get all valid non-imagenet images in this scan
+            image_ids, image_classes = unique_frames.fetch('image_id', 'image_class', order_by='repeats DESC')
+            num_frames = len(image_ids)
+            # * NOTE: this fetches all oracle images first and the rest in a "random" order;
+            # we use that random order to make the validation/training division below.
+
+            # Get number of oracle images and assign new test tier types for non-imagenet oracle images
+            assert len(unique_frames) != 0, 'unique_frames == 0'
+            n = int(np.median(unique_frames.fetch('repeats')))  # HACK
+            num_oracles = len(unique_frames & 'repeats > {}'.format(n))  # repeats
+            if num_oracles == 0:
+                raise ValueError('Could not find repeated frames to use for oracle.')
+            else:
+                oracle_classes = (dj.U('image_class') & (unique_frames & 'repeats > {}'.format(n))).fetch('image_class')
+                for oc in oracle_classes:
+                    if 'imagenet' not in oc:
+                        Tier.insert1(['test_{}'.format(oc)], skip_duplicates=True)
+            if len(self & (unique_frames & 'repeats > {}'.format(n)).proj() & 'tier != "test"') != 0: # check if there exists any oracle image that have been assigned in a non-test set
+                raise ValueError('Overlap between test set and train/validation set!')
+
+            # Compute number of validation examples
+            num_validation = int(np.ceil((num_frames - num_oracles) * 0.1))  # 10% validation examples
+
+            # Insert
+            self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'test_{}'.format(ic)} for iid, ic in
+                        zip(image_ids[:num_oracles], image_classes[:num_oracles]) if 'imagenet' not in ic],
+                        skip_duplicates=True)
+            # self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'test'} for iid, ic in
+            #             zip(image_ids[:num_oracles], image_classes[:num_oracles]) if 'imagenet' in ic],
+            #             skip_duplicates=True)
+            self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'validation'} for
+                        iid, ic in zip(image_ids[num_oracles: num_oracles + num_validation],
+                                        image_classes[num_oracles: num_oracles + num_validation])])
+            self.insert([{'image_id': iid, 'image_class': ic, 'tier': 'train'} for iid, ic in
+                        zip(image_ids[num_oracles + num_validation:],
+                            image_classes[num_oracles + num_validation:])])
+            # * NOTE: This will error out if a certain non-test image has already be inserted previously to prevent inconsistent 
+            # train/validation split across scans using an identical album. 
+
 
 @schema
 class ConditionTier(dj.Computed):
@@ -295,7 +367,8 @@ class ConditionTier(dj.Computed):
     def make(self, key):
         log.info(80 * '-')
         log.info('Processing ' + pformat(key))
-        valid_rel = [imagenet.Album.Oracle & imagenet.ValidAlbum, imagenet.Album.Single & imagenet.ValidAlbum]
+        valid_rel = [imagenet.Album.Oracle & imagenet.ValidAlbum, imagenet.Album.Single & imagenet.ValidAlbum, 
+                     rendered.Album.Oracle & rendered.ValidAlbum, rendered.Album.Single & rendered.ValidAlbum,]
 
         # count the number of distinct conditions presented for each one of three stimulus types:
         # "stimulus.Frame","stimulus.MonetFrame", "stimulus.TrippyFrame"
@@ -309,9 +382,24 @@ class ConditionTier(dj.Computed):
 
                 # deal with ImageNet frames first
                 log.info('Inserting assignment from ImageNetSplit')
-                targets = StaticScan * frame_table * ImageNetSplit & (stimulus.Trial & key) & IMAGENET_CLASSES & key
-                print('Inserting {} imagenet conditions!'.format(len(targets)))
-                self.insert(targets, ignore_extra_fields=True)
+                imagenet_rel = StaticScan * frame_table * ImageNetSplit & (stimulus.Trial & key) & IMAGENET_CLASSES & key
+                print('Inserting {} imagenet conditions!'.format(len(imagenet_rel)))
+                self.insert(imagenet_rel, ignore_extra_fields=True)
+
+                # deal with non-ImageNet frames
+                log.info('Inserting assignment from AlbumSplit')
+                album_rel = StaticScan * frame_table * AlbumSplit & (stimulus.Trial & key) & [dict(image_class=c) for c in ALBUM_CLASSES] & key
+                # Hack: set frames as invalid if they have been presented for multiple repeats but assigned to non-test tiers
+                invalid = dj.U('image_id', 'image_class', 'tier').aggr(frame_table * (stimulus.Trial & key) * AlbumSplit, n='count(*)') & 'n > 1 and tier not LIKE "%%test%%"'
+                invalid_keys = (album_rel & invalid.proj()).fetch(as_dict=True)
+                for k in invalid_keys:
+                    k.update([('tier', 'invalid')])
+                print('Inserting {} invalid album conditions!'.format(len(invalid)))
+                self.insert(invalid_keys, ignore_extra_fields=True)
+                # insert valid frames
+                album_rel = album_rel - invalid.proj()
+                print('Inserting {} album conditions!'.format(len(album_rel)))
+                self.insert(album_rel, ignore_extra_fields=True)
 
                 # deal with MEI images, assigning tier test for all images
                 assignment = (frame_table & 'image_class in ("cnn_mei", "lin_rf", "multi_cnn_mei", "multi_lin_rf")').proj(tier='"train"')
@@ -481,7 +569,7 @@ class Frame(dj.Computed):
         self.insert1(dict(key, frame=frame))
 
 
-@h5cached('/external/cache/', mode='array', transfer_to_tmp=False,
+@h5cached('/dj-stor01/cache/', mode='array', transfer_to_tmp=False,
           file_format='static{animal_id}-{session}-{scan_idx}-preproc{preproc_id}-spikemethod{spike_method}.h5')
 @schema
 class InputResponse(dj.Computed, FilterMixin):
@@ -978,7 +1066,7 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
             dpupil[~valid] = -1
             center[:, ~valid] = -1
 
-        self.insert1(dict(scan_key, pupil=pupil, dpupil=dpupil, center=center, valid=valid))
+        self.insert1(dict(scan_key, pupil=pupil, dpupil=dpupil, center=center, valid=valid))  
 
 
 @schema

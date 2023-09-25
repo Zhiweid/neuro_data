@@ -63,11 +63,12 @@ class Oracle(dj.Computed):
                     'Images of oracle trials does not match'
                 r, n = outputs.shape  # responses X neurons
                 log.info('\t    {} responses for {} neurons'.format(r, n))
-                assert r > 4, 'need more than 4 trials for oracle computation'
-                mu = outputs.mean(axis=0, keepdims=True)
-                oracle = (mu - outputs / r) * r / (r - 1)
-                oracles.append(oracle)
-                data.append(outputs)
+                # assert r > 4, 'need more than 4 trials for oracle computation'
+                if r > 4:
+                    mu = outputs.mean(axis=0, keepdims=True)
+                    oracle = (mu - outputs / r) * r / (r - 1)
+                    oracles.append(oracle)
+                    data.append(outputs)
             if len(data) == 0:
                 log.error('Found no oracle trials! Skipping ...')
                 return
