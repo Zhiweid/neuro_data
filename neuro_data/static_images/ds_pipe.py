@@ -490,14 +490,14 @@ class DvModelConfig(ConfigBase, dj.Lookup):
         def responses(self, key, trial_idx, condition_hashes):
             assert len(trial_idx) == len(condition_hashes)
             cond_df = pd.DataFrame({"condition_hash": condition_hashes})
-            cond_hashes, rows = (virtual_data_schemas.FoundationInputResponse.Input & key & cond_df).fetch('condition_hash', 'row_id')
+            cond_hashes, rows = (self * virtual_data_schemas.FoundationInputResponse.Input & key & cond_df).fetch('condition_hash', 'row_id')
             dic = dict(zip(cond_hashes, rows))
             order = np.array([dic[cond] for cond in condition_hashes])
-            responses = (virtual_data_schemas.FoundationInputResponse.ResponseBlock & key).fetch1('responses')
+            responses = (self * virtual_data_schemas.FoundationInputResponse.ResponseBlock & key).fetch1('responses')
             return responses[order, :]
         
         def unit_keys(self, key):
-            return (virtual_data_schemas.FoundationInputResponse.ResponseKeys & key).fetch(as_dict=True, order_by='col_id')
+            return (self * virtual_data_schemas.FoundationInputResponse.ResponseKeys & key).fetch(as_dict=True, order_by='col_id')
 
 
 @schema
