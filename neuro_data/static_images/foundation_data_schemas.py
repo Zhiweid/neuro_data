@@ -12,7 +12,7 @@ from foundation.recording.trace import Trace
 from neuro_data import logger as log
 from neuro_data.static_images.data_schemas import Preprocessing, SplineCurve, FilterMixin, stimulus, fuse
 
-schema = dj.schema('neurodata_static')
+schema = dj.schema('neurodata_foundation_static')
 
 @schema
 class FoundationInputResponse(dj.Computed, FilterMixin):
