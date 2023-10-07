@@ -2,6 +2,7 @@ import datajoint as dj
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
+import warnings
 from foundation.fnn.data import Data
 from foundation.fnn.model import Model, Instance
 from foundation.fnn.train import Objective, Train
@@ -91,7 +92,8 @@ class FoundationInputResponse(dj.Computed, FilterMixin):
             # Compute onset time of each trial (i.e. when pre_blank ends and the image starts), see details of how video.times is computed  
             # at foundation.stimulus.video.FrameList.compute
             stimulus_onset = np.array(video.times[1:])[::2]
-            assert stimulus_onset[0] >= frame_times[burnin_frames], 'First trial onset is within the burn-in period!'
+            if stimulus_onset[0] < frame_times[burnin_frames]:
+                warnings.warn('First trial onset is within the burn-in period!')
             
             # Get interpolated trial responses
             _R = trace_spline(stimulus_onset + sample_point, log=False)
