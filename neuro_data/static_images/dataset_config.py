@@ -24,8 +24,8 @@ from .data_schemas import (
 )
 from .ds_pipe import DvScanInfo
 
-virtual_data_schemas = dj.create_virtual_module('virtual_data_schemas', 'neurodata_static')
-fnn = dj.create_virtual_module('fnn', 'foundation_fnn')
+# virtual_data_schemas = dj.create_virtual_module('virtual_data_schemas', 'neurodata_static')
+# fnn = dj.create_virtual_module('fnn', 'foundation_fnn')
 
 @schema
 class InputConfig(ConfigBase, dj.Lookup):

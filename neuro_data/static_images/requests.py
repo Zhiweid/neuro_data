@@ -11,7 +11,7 @@ from .ds_pipe import DvScanInfo, DvModelConfig
 import datajoint as dj
 
 schema = dj.schema("neurodata_static")
-fnn = dj.create_virtual_module('fnn', 'foundation_fnn')
+# fnn = dj.create_virtual_module('fnn', 'foundation_fnn')
 
 @schema
 class DvScanInfoRequest(dj.Manual):
