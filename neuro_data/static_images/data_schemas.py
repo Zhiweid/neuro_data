@@ -195,7 +195,8 @@ class ImageNetSplit(dj.Lookup):
 
             # Get number of repeated frames
             assert len(unique_frames) != 0, 'unique_frames == 0'
-            n = int(np.median(unique_frames.fetch('repeats')))  # HACK
+            # n = int(np.median(unique_frames.fetch('repeats')))  # HACK
+            n = 1
             num_oracles = len(unique_frames & 'repeats > {}'.format(n))  # repeats
             if num_oracles == 0:
                 raise ValueError('Could not find repeated frames to use for oracle.')
@@ -917,7 +918,11 @@ class InputResponse(dj.Computed, FilterMixin):
 
         # --- compute statistics
         log.info('Computing statistics on {} dataset(s)'.format(preproc_params['norm_tier']))
-        response_statistics = run_stats(lambda ix: responses[ix], types, tiers == 'train', axis=0)
+        if preproc_params['norm_tier'] == 'test':
+            norm_tier = 'test'
+        else:
+            norm_tier = 'train'
+        response_statistics = run_stats(lambda ix: responses[ix], types, tiers == norm_tier, axis=0)
         ix = np.arange(len(tiers)) if preproc_params['norm_tier'] == 'all' else tiers == preproc_params['norm_tier'] # for record keeping purpose: mistakenly used all images for computing input statistics for preproc_id = 5
         input_statistics = run_stats_input(lambda ix: images[ix], types, ix, per_input=preproc_params['stats_per_input']) 
 
@@ -928,8 +933,8 @@ class InputResponse(dj.Computed, FilterMixin):
 
         if include_behavior:
             # ---- include statistics
-            behavior_statistics = run_stats(lambda ix: behavior[ix], types, tiers == 'train', axis=0)
-            eye_statistics = run_stats(lambda ix: pupil_center[ix], types, tiers == 'train', axis=0)
+            behavior_statistics = run_stats(lambda ix: behavior[ix], types, tiers == norm_tier, axis=0)
+            eye_statistics = run_stats(lambda ix: pupil_center[ix], types, tiers == norm_tier, axis=0)
 
             statistics['behavior'] = behavior_statistics
             statistics['pupil_center'] = eye_statistics
