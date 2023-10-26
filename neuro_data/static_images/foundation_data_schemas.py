@@ -3,6 +3,7 @@ import numpy as np
 from tqdm import tqdm
 import pandas as pd
 import warnings
+from scipy.stats import pearsonr
 from foundation.fnn.data import Data
 from foundation.fnn.model import Model, Instance
 from foundation.fnn.train import Objective, Train
@@ -10,8 +11,14 @@ from foundation.utility.resize import Resize
 from foundation.stimulus.video import FrameList
 from foundation.recording.scan import ScanUnitOrder
 from foundation.recording.trace import Trace
+from foundation.fnn.visual import VisualRecordingCorrelation
+from foundation.recording.visual import VisualMeasure
 from neuro_data import logger as log
+from neuro_data.static_images.configs import DataConfig
+from neuro_data.static_images import data_schemas
 from neuro_data.static_images.data_schemas import Preprocessing, SplineCurve, FilterMixin, stimulus, fuse
+
+stimulus = dj.create_virtual_module('stimulus', 'pipeline_stimulus')
 
 schema = dj.schema('neurodata_foundation_static')
 
@@ -113,11 +120,130 @@ class FoundationInputResponse(dj.Computed, FilterMixin):
         self.ResponseKeys.insert([dict(**key, **tup, col_id=cid) for cid, tup in enumerate(unit_tups)], ignore_extra_fields=True)
         self.Input.insert([dict(**key, **tup, row_id=rid) for rid, tup in enumerate(input_tups)])
 
+@schema
+class FoundationEval(dj.Computed):
+    definition = """
+    -> Model
+    ---
+    median_dyn_cc_abs            : float # median trial-average test correlation coefficient computed on dynamic oracles 
+    median_dyn_cc_max            : float # median maximum possible correlation coefficient computed on dynamic oracles
+    median_dyn_cc_norm           : float # median dyn_cc_abs / dyn_cc_max
+    median_sta_cc_abs            : float # median trial-average test correlation coefficient computed on static oracles 
+    median_sta_cc_max            : float # median maximum possible correlation coefficient computed on static oracles
+    median_sta_cc_norm           : float # median sta_cc_abs / sta_cc_max
+    """
+                
+    class UnitDynamic(dj.Part):
+        definition = """
+        -> master
+        -> VisualRecordingCorrelation.proj(trace_order='unit')
+        -> VisualMeasure
+        unit_id                  : int   # unit_id as in fuse.Activity.Trace
+        ---
+        dyn_cc_abs               : float # trial-average test correlation coefficient computed on dynamic oracles 
+        dyn_cc_max               : float # maximum possible correlation coefficient computed on dynamic oracles
+        dyn_cc_norm              : float # dyn_cc_abs / dyn_cc_max
+        """
+        
+    class UnitStatic(dj.Part):
+        definition = """
+        -> master
+        -> FoundationInputResponse.ResponseKeys
+        ---
+        sta_cc_abs               : float # trial-average test correlation coefficient computed on static oracles 
+        sta_cc_max               : float # maximum possible correlation coefficient computed on static oracles
+        sta_cc_norm              : float # sta_cc_abs / sta_cc_max
+        """
+        
+    def make(self, key):
+        # Fetch dynamic cc_abs and cc_max
+        trace_rel = dj.U('trace_id', 'unit_id', 'trace_order') & (Trace.ScanUnit * ScanUnitOrder * Data.VisualScan & key)
+        cc_abs_rel = VisualRecordingCorrelation.proj('correlation', trace_order='unit') * trace_rel & key
+        cc_max_rel = VisualMeasure * trace_rel
+        assert (len(cc_abs_rel) == len(cc_max_rel)), 'number of units disagree!'
+        dyn_abs_key, dyn_cc_abs = cc_abs_rel.fetch(dj.key, 'correlation', order_by='unit_id')
+        dyn_max_key, dyn_cc_max = cc_max_rel.fetch(dj.key, 'measure', order_by='unit_id')
 
-    def reorder_responses(self, key, condition_hashes):
-        cond_df = pd.DataFrame({"condition_hash": condition_hashes})
-        cond_hashes, rows = (self.Input & key & cond_df).fetch('condition_hash', 'row_id')
-        dic = dict(zip(cond_hashes, rows))
-        order = np.array([dic[cond] for cond in condition_hashes])
-        responses = (self.ResponseBlock & key).fetch1('responses')
-        return responses[order, :]
+        # Replace nan value with 0.0
+        dyn_cc_norm = dyn_cc_abs / dyn_cc_max
+        dyn_cc_abs = np.nan_to_num(dyn_cc_abs,nan=0.0)
+        dyn_cc_max = np.nan_to_num(dyn_cc_max,nan=0.0)
+        dyn_cc_norm = np.nan_to_num(dyn_cc_norm,nan=0.0)
+        dyn_tuples = [dict(**abs_key, resample_id=max_key['resample_id'], offset_id=max_key['offset_id'], rate_id=max_key['rate_id'], measure_id=max_key['measure_id'],
+                           dyn_cc_abs=cc_abs, dyn_cc_max=cc_max, dyn_cc_norm=cc_norm)
+                           for abs_key, max_key, cc_abs, cc_max, cc_norm in zip(dyn_abs_key, dyn_max_key, dyn_cc_abs, dyn_cc_max, dyn_cc_norm)]
+
+        # Compute static cc_max 
+        data_config = DataConfig.CorrectedAreaLayer & \
+                         {'stimulus_type': 'stimulus.Frame', 'exclude': '', 'layer': 'L2/3',
+                          'normalize_per_image': False, 'normalize': True} & 'brain_area in ("V1")'
+        group = data_schemas.StaticMultiDatasetGroupAssignment & (Data.VisualScan & key) & 'preproc_id = 14'
+        dset_key = (DataConfig * data_schemas.StaticMultiDataset & (group * data_config).proj()).fetch1(dj.key)
+        testsets, _ = DataConfig().load_data(dset_key, tier='test', oracle=True)
+        ro_key = list(testsets.keys())[0]
+        # group in vivo static responses by condition_hash in the dynamic scan
+        conds = (stimulus.Condition * stimulus.Frame * data_schemas.ConditionTier & (Data.VisualScan & key)).fetch('condition_hash', order_by='image_class, image_id')
+        responses = [testsets[ro_key].responses[testsets[ro_key].condition_hashes == c] for c in conds]
+        sta_cc_max = cal_reliability(responses)
+
+        # Compute static cc_abs
+        testsets, _ = DataConfig().load_data(dset_key, tier='test')
+        norm_resps = testsets[ro_key].responses / testsets[ro_key].statistics['responses/all/std']
+        avg_resps = np.stack([norm_resps[testsets[ro_key].condition_hashes == c].mean(0) for c in conds])
+        framelist_key = (dj.U('framelist_id', 'preproc_id') & (FoundationInputResponse.Input & key & [{'condition_hash': cond} for cond in conds])).fetch1()
+        unit_keys = (FoundationInputResponse.ResponseKeys & framelist_key & key).fetch(dj.key, order_by='unit_id')
+        rows = (FoundationInputResponse.Input & key & [{'condition_hash': cond} for cond in conds] & framelist_key).fetch('row_id', order_by='image_id')
+        resps = (FoundationInputResponse.ResponseBlock & key & framelist_key).fetch1('responses')
+        resps = resps[rows]
+        sta_cc_abs = np.array([pearsonr(avg_resps[:, i], resps[:, i])[0] for i in range(resps.shape[1])])
+
+        # Replace nan value with 0.0
+        sta_cc_norm = sta_cc_abs / sta_cc_max
+        sta_cc_abs = np.nan_to_num(sta_cc_abs,nan=0.0)
+        sta_cc_max = np.nan_to_num(sta_cc_max,nan=0.0)
+        sta_cc_norm = np.nan_to_num(sta_cc_norm,nan=0.0)
+
+        sta_tuples = [dict(**uk, sta_cc_abs=cc_abs, sta_cc_max=cc_max, sta_cc_norm=cc_norm)
+                           for uk, cc_abs, cc_max, cc_norm in zip(unit_keys, sta_cc_abs, sta_cc_max, sta_cc_norm)]
+
+        # Insert
+        self.insert1(dict(**key, median_dyn_cc_abs=np.nanmedian(dyn_cc_abs), median_dyn_cc_max=np.nanmedian(dyn_cc_max), median_dyn_cc_norm=np.nanmedian(dyn_cc_norm), \
+                                 median_sta_cc_abs=np.nanmedian(sta_cc_abs), median_sta_cc_max=np.nanmedian(sta_cc_max), median_sta_cc_norm=np.nanmedian(sta_cc_norm)))
+        self.UnitDynamic.insert(dyn_tuples)
+        self.UnitStatic.insert(sta_tuples)
+        
+
+# responses is a list of [n_repeats,n_units]
+def cal_reliability(responses): 
+    # Fill missing trial with NaNs for convenience
+    agg_ns = np.array([len(r) for r in responses])
+    max_n = max(agg_ns)
+    for i, r in enumerate(responses):
+        add_shape = list(r.shape)
+        if add_shape[0] < max_n:
+            add_shape[0] = max_n - add_shape[0]
+            nan = np.full_like(r, np.nan, shape=add_shape)
+            responses[i] = np.concatenate([r, nan])
+    v = 1 / agg_ns**2
+    w = agg_ns - 1
+    z = agg_ns.sum() - len(agg_ns)
+    n = np.sqrt(z.sum() / (w * v).sum())
+    y = np.stack(responses, axis=0)  
+
+    # Mean for each stimuli
+    y_m = np.nanmean(y,axis=1)
+
+    # Power: variance of mean of stimuli
+    P = np.var(y_m,axis=0,ddof=1)
+
+    # Total power: mean of variance across repeats
+    TP = np.mean(np.nanvar(y, axis=0, ddof=1), axis=0)
+
+    # Signal power: 
+    SP = (n * P - TP) / (n - 1)
+    # variance of response mean
+    y_m_v = np.var(y_m, axis=0, ddof=0)
+
+    # correlation coefficient ceiling
+    cc_max = np.sqrt(SP / y_m_v)
+    return cc_max
