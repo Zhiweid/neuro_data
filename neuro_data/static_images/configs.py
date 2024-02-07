@@ -98,7 +98,7 @@ class StimulusTypeMixin:
         return datasets
 
     @staticmethod
-    def get_constraint(dataset, stimulus_type, tier=None):
+    def get_constraint(dataset, stimulus_type, tier=None, eye_filter_key=None):
         """
         Find subentries of dataset that matches the given `stimulus_type` specification and `tier` specification.
         `stimulus_type` is of the format `stimulus.Frame|~stimulus.Monet|...`. This function returns a boolean array
@@ -116,6 +116,26 @@ class StimulusTypeMixin:
             constraint = constraint | tmp
         if tier is not None:
             constraint = constraint & (dataset.tiers == tier)
+            
+        if eye_filter_key is not None:
+            x = dataset.pupil_center[:, 0]
+            y = dataset.pupil_center[:, 1]
+            distance = np.sqrt((x - x.mean())**2 + (y - y.mean())**2)
+            
+            assert not (eye_filter_key['distance'] is None) & (eye_filter_key['percentile'] is None), 'Need either distance or percentile as threshold!'
+            
+            if eye_filter_key['distance'] is not None and eye_filter_key['percentile'] is None:
+                thresh = eye_filter_key['distance']
+            elif eye_filter_key['distance'] is None and eye_filter_key['percentile'] is not None:
+                thresh = np.percentile(distance, eye_filter_key['percentile'])
+
+            if eye_filter_key['include_type'] == 'below':
+                log.info('Subsampling to trials with eye position within {} from the mean position'.format(thresh))
+                constraint = constraint & (distance <= thresh)
+            elif eye_filter_key['include_type'] == 'above':
+                log.info('Subsampling to trials with eye position further than {} from the mean position'.format(thresh))
+                constraint = constraint & (distance >= thresh)
+
         return constraint
 
     @staticmethod
@@ -131,7 +151,7 @@ class StimulusTypeMixin:
             A subclass of Sampler
 
         """
-        assert tier in ['train', 'validation', 'test', None]
+        assert tier in ['train', 'validation', 'test', 'test_rendered_scene', None]
         if tier == 'train':
             if not balanced:
                 Sampler = SubsetRandomSampler
@@ -153,7 +173,7 @@ class StimulusTypeMixin:
         log.info(
             'Number of batches in the loader will be {}'.format(int(np.ceil(len(loader.sampler) / loader.batch_size))))
 
-    def get_loaders(self, datasets, tier, batch_size, stimulus_types, Sampler):
+    def get_loaders(self, datasets, tier, batch_size, stimulus_types, Sampler, eye_filter_key=None):
         """
 
         Args:
@@ -180,7 +200,7 @@ class StimulusTypeMixin:
         log.info('Stimulus sources: "{}"'.format('","'.join(stimulus_types)))
 
         loaders = OrderedDict()
-        constraints = [self.get_constraint(dataset, stimulus_type, tier=tier)
+        constraints = [self.get_constraint(dataset, stimulus_type, tier=tier, eye_filter_key=eye_filter_key)
                        for dataset, stimulus_type in zip(datasets.values(), stimulus_types)]
 
         for (k, dataset), stimulus_type, constraint in zip(datasets.items(), stimulus_types, constraints):
@@ -198,7 +218,7 @@ class StimulusTypeMixin:
         return loaders
 
     def load_data(self, key, tier=None, batch_size=1, key_order=None,
-                  exclude_from_normalization=None, stimulus_types=None, Sampler=None):
+                  exclude_from_normalization=None, stimulus_types=None, Sampler=None, eye_filter_key=None):
         log.info('Loading {} dataset with tier={}'.format(
             self._stimulus_type, tier))
         datasets = StaticMultiDataset().fetch_data(key, key_order=key_order)
@@ -214,11 +234,11 @@ class StimulusTypeMixin:
             key, datasets, exclude=exclude_from_normalization)
 
         loaders = self.get_loaders(
-            datasets, tier, batch_size, stimulus_types, Sampler)
+            datasets, tier, batch_size, stimulus_types, Sampler, eye_filter_key)
         return datasets, loaders
 
 class AreaLayerRawMixin(StimulusTypeMixin):
-    def load_data(self, key, tier=None, batch_size=1, key_order=None, stimulus_types=None, Sampler=None, **kwargs):
+    def load_data(self, key, tier=None, batch_size=1, key_order=None, stimulus_types=None, Sampler=None, eye_filter_key=None, **kwargs):
         log.info('Ignoring input arguments: "' +
                  '", "'.join(kwargs.keys()) + '"' + 'when creating datasets')
         exclude = key.pop('exclude').split(',')
@@ -226,7 +246,8 @@ class AreaLayerRawMixin(StimulusTypeMixin):
         datasets, loaders = super().load_data(key, tier, batch_size, key_order,
                                               exclude_from_normalization=exclude,
                                               stimulus_types=stimulus_types,
-                                              Sampler=Sampler)
+                                              Sampler=Sampler, 
+                                              eye_filter_key=eye_filter_key)
 
         log.info('Subsampling to layer {} and area(s) "{}"'.format(key.get('layer') or key['brain_layers'],
                                                                    key.get('brain_area') or key['brain_areas']))
@@ -249,6 +270,29 @@ class AreaLayerRawMixin(StimulusTypeMixin):
                 del loaders[readout_key]
             else:
                 dataset.transforms.insert(-1, Subsample(idx))
+        return datasets, loaders
+
+class AreaLayerEyeMixin(AreaLayerRawMixin):
+    def load_data(self, key, tier=None, batch_size=1, key_order=None, stimulus_types=None, Sampler=None, **kwargs):
+
+        datasets, loaders = super().load_data(key, tier, batch_size, key_order,
+                                              stimulus_types=stimulus_types,
+                                              Sampler=Sampler,
+                                              eye_filter_key=key)
+
+        # log.info('Subsampling to trials with eye position within {}um from the mean position'.format(key.get('distance')))
+        # for readout_key, dataset in datasets.items():
+        #     x = dataset.pupil_center[:, 0]
+        #     y = dataset.pupil_center[:, 1]
+        #     distance = np.sqrt((x - x.mean())**2 + (y - y.mean())**2)
+
+        #     idx = np.where(distance <= key['distance'])[0]
+        #     if len(idx) == 0:
+        #         log.warning('Empty set of neurons. Deleting this key')
+        #         del datasets[readout_key]
+        #         del loaders[readout_key]
+        #     else:
+        #         dataset.transforms.insert(-1, Subsample(idx, sample_field='images'))
         return datasets, loaders
 
 class AreaLayerModelMixin:
@@ -431,6 +475,44 @@ class DataConfig(ConfigBase, dj.Lookup):
                     ["V1", "LM"],
                 ),
                 ["all", "stimulus.Frame2", "", True, False, "L2/3", "V1"],
+            ]:
+                yield dict(zip(self.heading.secondary_attributes, p))
+
+    class CorrectedAreaLayerEye(dj.Part, AreaLayerEyeMixin):
+        definition = """
+        -> master
+        ---
+        stats_source            : varchar(50)   # normalization source
+        stimulus_type           : varchar(50)   # type of stimulus
+        exclude                 : varchar(512)  # what inputs to exclude from normalization
+        normalize               : bool          # whether to use a normalizer or not
+        normalize_per_image     : bool          # whether to normalize each input separately
+        -> experiment.Layer
+        -> anatomy.Area
+        distance                : float         # restrict to trials with eye position within certain distance from the mean position
+        percentile              : float         # percentile of trials with regard to distance of eye position to the mean eye position
+        include_type            : varchar(50)   # whether to include trials with values "below" or "above" the distance or percentile threshld
+        """
+
+        def describe(self, key):
+            return "{brain_area} {layer} on {stimulus_type} including eye {include_type} {distance} or {percentile} percentile from center. normalize={normalize} on {stats_source} (except '{exclude}')".format(
+                **key)
+
+        @property
+        def content(self):
+            for p in [
+                *product(
+                    ["all"],
+                    ["stimulus.Frame"],
+                    [""],
+                    [True],
+                    [False],
+                    ["L2/3"],
+                    ["V1"],
+                    [5, 3, None],
+                    [50, None],
+                    ['below', 'above']
+                ),
             ]:
                 yield dict(zip(self.heading.secondary_attributes, p))
 
