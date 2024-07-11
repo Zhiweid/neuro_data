@@ -125,15 +125,34 @@ class InputConfig(ConfigBase, dj.Lookup):
             """Load all frames included in InputResponse.Input and filtered by `valid` in Eye and Treadmill"""
             params = (self * Preprocessing).fetch1()
             if not (params["gamma"] or params["linear_mon"]):
-                trial_idx, cond, frame, types = (
-                    InputResponse.Input * Frame * stimulus.Condition & scan_key & params
-                ).fetch(
-                    "trial_idx",
-                    "condition_hash",
-                    "frame",
-                    "stimulus_type",
-                    order_by="row_id",  # order by row_id to ensure the order matches Eye and Treadmill
-                )
+                # trial_idx, cond, frame, types = (
+                #     InputResponse.Input * Frame * stimulus.Condition & scan_key & params
+                # ).fetch(
+                #     "trial_idx",
+                #     "condition_hash",
+                #     "frame",
+                #     "stimulus_type",
+                #     order_by="row_id",  # order by row_id to ensure the order matches Eye and Treadmill
+                # )
+                trial_idx, cond, frame, types = [], [], [], []
+                for i in tqdm(range(len(InputResponse.Input * Frame * stimulus.Condition & scan_key & params))):
+                    _trial_idx, _cond, _frame, _types = (
+                                    InputResponse.Input * Frame * stimulus.Condition & scan_key & params & {'row_id': i}
+                                ).fetch1(
+                                    "trial_idx",
+                                    "condition_hash",
+                                    "frame",
+                                    "stimulus_type"  # order by row_id to ensure the order matches Eye and Treadmill
+                                )
+                    trial_idx.append(_trial_idx)
+                    cond.append(_cond)
+                    frame.append(_frame)
+                    types.append(_types)
+                trial_idx = np.array(trial_idx)
+                cond = np.array(cond)
+                frame = np.array(frame)
+                types = np.array(types)
+
                 valid_eye = (Eye & scan_key & params).fetch1("valid")
                 valid_treadmill = (Treadmill & scan_key & params).fetch1("valid")
                 valid = valid_eye & valid_treadmill

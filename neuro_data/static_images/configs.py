@@ -3,8 +3,8 @@ from itertools import product
 from attorch.dataloaders import RepeatsBatchSampler
 from torch.utils.data.sampler import SubsetRandomSampler
 
-from neuro_data.static_images.data_schemas import StaticMultiDataset
-from neuro_data.static_images.transforms import Subsample, Normalizer, ToTensor
+# from neuro_data.static_images.data_schemas import StaticMultiDataset
+# from neuro_data.static_images.transforms import Subsample, Normalizer, ToTensor
 from neuro_data.utils.sampler import SubsetSequentialSampler, BalancedSubsetSampler
 from neuro_data.utils.config import ConfigBase
 from neuro_data.common import configs as common_configs
@@ -28,28 +28,28 @@ anatomy = dj.create_virtual_module('anatomy', 'pipeline_anatomy')
 schema = dj.schema('neurodata_static_configs')
 
 
-try:
-    models = dj.create_virtual_module('models', 'neurostatic_models')
+# try:
+#     models = dj.create_virtual_module('models', 'neurostatic_models')
 
 
-    @schema
-    class ModelCollection(dj.Lookup):
-        definition = """
-        model_collection_id: smallint   # collection id
-        ---
-        collection_description: varchar(255)  # description of the collection
-        """
-        contents = [(0, 'Best CNN model')]
+#     @schema
+#     class ModelCollection(dj.Lookup):
+#         definition = """
+#         model_collection_id: smallint   # collection id
+#         ---
+#         collection_description: varchar(255)  # description of the collection
+#         """
+#         contents = [(0, 'Best CNN model')]
 
-        class Entry(dj.Part):
-            definition = """
-            -> master
-            -> StaticMultiDataset
-            ---
-            -> models.Model
-            """
-except:
-    pass
+#         class Entry(dj.Part):
+#             definition = """
+#             -> master
+#             -> StaticMultiDataset
+#             ---
+#             -> models.Model
+#             """
+# except:
+#     pass
 
 
 

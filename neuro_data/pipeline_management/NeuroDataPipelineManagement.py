@@ -2,7 +2,7 @@ import numpy as np
 import datajoint as dj
 
 
-from neuro_data.static_images.data_schemas import StaticScanCandidate, StaticScan, ImageNetSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial, StaticMultiDataset
+from neuro_data.static_images.data_schemas import StaticScanCandidate, StaticScan, ImageNetSplit, AlbumSplit, ConditionTier, Frame, InputResponse, Eye, Treadmill, StaticMultiDataset, StaticMultiDatasetGroupAssignment, ExcludedTrial, StaticMultiDataset
 
 pipeline_anatomy = dj.create_virtual_module('pipeline_anatomy', 'pipeline_anatomy')
 pipeline_fuse = dj.create_virtual_module('pipeline_fuse', 'pipeline_fuse')
@@ -145,6 +145,10 @@ class NeuroDataPipelineManagement():
             # Populating ImageNetSplit
             print("[NeuroData.Static Populate]: Populating ImageNetSplit:")
             ImageNetSplit().fill(target_scan_done_key)
+            
+            # Populating AlbumSplit
+            print("[NeuroData.Static Populate]: Populating AlbumSplit:")
+            AlbumSplit().fill(target_scan_done_key)
 
             # Populate ConditionTier
             print("[NeuroData.Static Populate]: Populating ConditionTier:")

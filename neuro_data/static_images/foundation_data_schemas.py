@@ -182,17 +182,28 @@ class FoundationEval(dj.Computed):
         testsets, _ = DataConfig().load_data(dset_key, tier='test', oracle=True)
         ro_key = list(testsets.keys())[0]
         # group in vivo static responses by condition_hash in the dynamic scan
-        conds = (stimulus.Condition * stimulus.Frame * data_schemas.ConditionTier & (Data.VisualScan & key)).fetch('condition_hash', order_by='image_class, image_id')
-        responses = [testsets[ro_key].responses[testsets[ro_key].condition_hashes == c] for c in conds]
+        conds, im_classes, im_ids = (stimulus.Condition * stimulus.Frame * data_schemas.ConditionTier & (Data.VisualScan & key)).fetch('condition_hash', 'image_class', 'image_id', order_by='image_class, image_id')
+        responses = []
+        for im_c, im_id in zip(im_classes, im_ids):
+            class_str = np.array([c.astype('str') for c in testsets[ro_key].item_info['frame_image_class']])
+            idxs = np.where((class_str == im_c) & \
+                   (np.array(list(testsets[ro_key].item_info['frame_image_id'])) == im_id))[0]
+            responses.append(testsets[ro_key].responses[idxs])
         sta_cc_max = cal_reliability(responses)
 
         # Compute static cc_abs
         testsets, _ = DataConfig().load_data(dset_key, tier='test')
         norm_resps = testsets[ro_key].responses / testsets[ro_key].statistics['responses/all/std']
-        avg_resps = np.stack([norm_resps[testsets[ro_key].condition_hashes == c].mean(0) for c in conds])
-        framelist_key = (dj.U('framelist_id', 'preproc_id') & (FoundationInputResponse.Input & key & [{'condition_hash': cond} for cond in conds])).fetch1()
+        avg_resps = []
+        for im_c, im_id in zip(im_classes, im_ids):
+            class_str = np.array([c.astype('str') for c in testsets[ro_key].item_info['frame_image_class']])
+            idxs = np.where((class_str == im_c) & \
+                   (np.array(list(testsets[ro_key].item_info['frame_image_id'])) == im_id))[0]
+            avg_resps.append(norm_resps[idxs].mean(0))
+        avg_resps = np.stack(avg_resps)
+        framelist_key = (dj.U('framelist_id', 'preproc_id') & (FoundationInputResponse.Input & key & [{'image_class': im_c, 'image_id': im_d} for im_c, im_d in zip(im_classes, im_ids)])).fetch1()
         unit_keys = (FoundationInputResponse.ResponseKeys & framelist_key & key).fetch(dj.key, order_by='unit_id')
-        rows = (FoundationInputResponse.Input & key & [{'condition_hash': cond} for cond in conds] & framelist_key).fetch('row_id', order_by='image_id')
+        rows = (FoundationInputResponse.Input & key & framelist_key & [{'image_class': im_c, 'image_id': im_d} for im_c, im_d in zip(im_classes, im_ids)]).fetch('row_id', order_by='image_id')
         resps = (FoundationInputResponse.ResponseBlock & key & framelist_key).fetch1('responses')
         resps = resps[rows]
         sta_cc_abs = np.array([pearsonr(avg_resps[:, i], resps[:, i])[0] for i in range(resps.shape[1])])

@@ -6,6 +6,7 @@ from pprint import pformat
 import datajoint as dj
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from neuro_data import logger as log
 from neuro_data.utils.data import h5cached, SplineCurve, FilterMixin, fill_nans, NaNSpline
@@ -30,6 +31,10 @@ treadmill = dj.create_virtual_module('treadmill', 'pipeline_treadmill')
 base = dj.create_virtual_module("base", "neurostatic_base")
 imagenet = dj.create_virtual_module('imagenet', 'pipeline_imagenet')
 rendered = dj.create_virtual_module('rendered', 'pipeline_rendered_images')
+ephys = dj.create_virtual_module('ephys', 'neuropixel_ephys')
+neuropixel = dj.create_virtual_module('neuropixel', 'pipeline_neuropixel')
+ephys_anatomy = dj.create_virtual_module('ephys_anatomy', 'neuropixel_manual_anatomy')
+
 schema = dj.schema('neurodata_static')
 
 # set of attributes that uniquely identifies the frame content
@@ -86,19 +91,22 @@ class StaticScan(dj.Computed):
         -> fuse.ScanSet.Unit
         """
 
-    key_source = fuse.ScanDone() & StaticScanCandidate & 'spike_method in (5,6) and segmentation_method=6'
+    key_source = fuse.ScanDone() & StaticScanCandidate & 'spike_method in (-1,5,6) and segmentation_method in (-2,6)'
 
     @staticmethod
     def complete_key(key):
         return dict((dj.U('segmentation_method', 'pipe_version') &
-                     (meso.ScanSet.Unit() & key)).fetch1(dj.key), **key)
+                     (fuse.ScanSet.Unit() & key)).fetch1(dj.key), **key)
 
     def make(self, key):
         self.insert(StaticScanCandidate & key, ignore_extra_fields=True)
-        pipe = (fuse.ScanDone() & key).fetch1('pipe')
-        pipe = dj.create_virtual_module(pipe, 'pipeline_' + pipe)
-        units = (fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
-                           & dict(pipe_version=1, type='soma'))
+        pipe_name = (fuse.ScanDone() & key).fetch1('pipe')
+        pipe = dj.create_virtual_module(pipe_name, 'pipeline_' + pipe_name)
+        if pipe_name != "neuropixel":
+            units = (fuse.ScanDone * pipe.ScanSet.Unit * pipe.MaskClassification.Type & key
+                               & dict(pipe_version=1, type='soma'))
+        else: 
+            units = (fuse.ScanDone * pipe.ScanSet.Unit & key & dict(pipe_version=-1))
         assert len(units) > 0, 'No units found!'
         self.Unit().insert(units,
                         ignore_extra_fields=True)
@@ -607,6 +615,21 @@ class InputResponse(dj.Computed, FilterMixin):
             ---
             col_id           : int             # col id in the response block
             """
+        
+    class ResponseBlockNpx(dj.Part):
+        definition = """
+            -> master
+            ---
+            responses           : blob@data   # response of one neurons for all bins
+            """
+
+    class ResponseKeysNpx(dj.Part):
+        definition = """
+            -> master.ResponseBlockNpx
+            -> neuropixel.ScanSet.Unit
+            ---
+            col_id           : int             # col id in the response block
+            """
 
     def load_traces_and_frametimes(self, key):
         # -- find number of recording depths
@@ -649,6 +672,31 @@ class InputResponse(dj.Computed, FilterMixin):
         trace_spline = SplineCurve(frame_times,
                                    [np.convolve(trace, h_trace, mode='same') for trace in traces], k=1, ext=1)
         return trace_spline, trace_keys, frame_times.min(), frame_times.max()
+    
+    def get_spike_times(self, key):
+        ephys = dj.create_virtual_module('ephys', 'neuropixel_ephys')
+
+        beh2stim_slope, beh2stim_intercept, npixel2beh_slope, npixel2beh_intercept, num_npixel_samples = (stimulus.EphysSync & key).fetch('beh2stim_slope','beh2stim_intercept','npixel2beh_slope','npixel2beh_intercept','num_npixel_samples')
+        npixel_samples = np.arange(num_npixel_samples)
+
+        def npixel_samples_in_stimulus_clock(npixel_samples,beh2stim_slope,beh2stim_intercept,npixel2beh_slope,npixel2beh_intercept): 
+            np_in_stim_clock = beh2stim_slope*(npixel2beh_slope*npixel_samples + npixel2beh_intercept) + beh2stim_intercept
+            return np_in_stim_clock
+        # for ephys file's sync signal, rising edge sample indices were used for regressor
+        npx_synced_times = npixel_samples_in_stimulus_clock(npixel_samples,beh2stim_slope,beh2stim_intercept,npixel2beh_slope,npixel2beh_intercept)
+
+        # get spike times in stimulus clock by adding spike times relative to start of npixel recording to stimulus time at start of recording (i.e. sample=0)
+        # Question: why can we add spike times in npixel clock directly to stimulus time?
+        sp_times = (ephys.CuratedClustering.Unit & (ephys.Session & key)).fetch('spike_times', order_by='unit_id')
+        sp_times = sp_times + npx_synced_times[0]
+        
+        pipe = (fuse.ScanDone & key).fetch1('pipe')
+        pipe = dj.create_virtual_module(pipe, 'pipeline_' + pipe)
+        sp_keys = (pipe.ScanSet.Unit & key).fetch(dj.key, order_by='unit_id')
+        
+        spt_min = np.array([t.min() for t in sp_times]).min()
+        spt_max = np.array([t.max() for t in sp_times]).max()
+        return sp_times, sp_keys, spt_min, spt_max
 
     @staticmethod
     def stimulus_onset(flip_times, duration):
@@ -671,13 +719,7 @@ class InputResponse(dj.Computed, FilterMixin):
 
     def make(self, scan_key):
         self.insert1(scan_key)
-        # integration window size for responses
-        duration, offset = map(float, (Preprocessing() & scan_key).fetch1('duration', 'offset'))
-        sample_point = offset + duration / 2
 
-        log.info('Sampling neural responses at {}s intervals'.format(duration))
-
-        trace_spline, trace_keys, ftmin, ftmax = self.get_trace_spline(scan_key, duration)
         # exclude trials marked in ExcludedTrial
         log.info('Excluding {} trials based on ExcludedTrial'.format(len(ExcludedTrial() & scan_key)))
         flip_times, trial_keys = (Frame * (stimulus.Trial - ExcludedTrial) & scan_key).fetch('flip_times', dj.key,
@@ -688,18 +730,49 @@ class InputResponse(dj.Computed, FilterMixin):
         if len(flip_times) == 0:
             log.warning('No static frames were present to be processed for {}'.format(scan_key))
             return
+        
+        # integration window size for responses
+        duration, offset = map(float, (Preprocessing & scan_key).fetch1('duration', 'offset'))
+        filter = (Preprocessing & scan_key).fetch1('filter')
 
-        valid = np.array([ft.min() >= ftmin and ft.max() <= ftmax for ft in flip_times], dtype=bool)
-        if not np.all(valid):
-            log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
-                (~valid).sum()))
-
+        # get onset of each trial
         stimulus_onset = self.stimulus_onset(flip_times, duration)
-        log.info('Sampling {} responses {}s after stimulus onset'.format(valid.sum(), sample_point))
-        R = trace_spline(stimulus_onset[valid] + sample_point, log=True).T
+    
+        pipe = (fuse.ScanDone & scan_key).fetch1('pipe')
 
-        self.ResponseBlock.insert1(dict(scan_key, responses=R))
-        self.ResponseKeys.insert([dict(scan_key, **trace_key, col_id=i) for i, trace_key in enumerate(trace_keys)])
+        if pipe != "neuropixel" and filter == "hamming": # for 2p scans
+            sample_point = offset + duration / 2
+
+            log.info('Sampling neural responses at {}s intervals'.format(duration))
+            trace_spline, trace_keys, ftmin, ftmax = self.get_trace_spline(scan_key, duration)
+
+            valid = np.array([ft.min() >= ftmin and ft.max() <= ftmax for ft in flip_times], dtype=bool)
+            if not np.all(valid):
+                log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
+                    (~valid).sum()))
+            
+            log.info('Sampling {} responses {}s after stimulus onset'.format(valid.sum(), sample_point))
+            R = trace_spline(stimulus_onset[valid] + sample_point, log=True).T
+
+            self.ResponseBlock.insert1(dict(scan_key, responses=R))
+            self.ResponseKeys.insert([dict(scan_key, **trace_key, col_id=i) for i, trace_key in enumerate(trace_keys)])
+
+        elif pipe == "neuropixel" and filter == "boxcar":
+            sp_times, sp_keys, spt_min, spt_max = self.get_spike_times(scan_key)
+
+            valid = np.array([ft.min() >= spt_min and ft.max() <= spt_max for ft in flip_times], dtype=bool)
+            if not np.all(valid):
+                log.warning('Dropping {} trials with dropped frames or flips outside the recording interval'.format(
+                    (~valid).sum()))
+                
+            R = np.zeros((len(stimulus_onset[valid]), len(sp_times)))
+            for i, so in tqdm(enumerate(stimulus_onset[valid])):
+                for j, spt in enumerate(sp_times):
+                    R[i, j] = ((spt >= so + offset) & (spt <= so + offset + duration)).sum()
+
+            self.ResponseBlockNpx.insert1(dict(scan_key, responses=R))
+            self.ResponseKeysNpx.insert([dict(scan_key, **sp_key, col_id=i) for i, sp_key in enumerate(sp_keys)])
+
         self.Input.insert([dict(scan_key, **trial_key, row_id=i)
                            for i, trial_key in enumerate(compress(trial_keys, valid))])
 
@@ -709,19 +782,19 @@ class InputResponse(dj.Computed, FilterMixin):
         preproc_params = (Preprocessing & key).fetch1()
 
         # meso or reso?
-        pipe = (fuse.ScanDone() * StaticScan() & key).fetch1('pipe')
-        pipe = dj.create_virtual_module(pipe, 'pipeline_' + pipe)
+        pipe_name = (fuse.ScanDone() * StaticScan() & key).fetch1('pipe')
+        pipe = dj.create_virtual_module(pipe_name, 'pipeline_' + pipe_name)
 
         # get data relation
         include_behavior = bool(Eye.proj() * Treadmill.proj() & key)
 
         assert include_behavior, 'Behavior data is missing!'
 
-        # make sure that including areas and layers does not decrease number of neurons
-        assert len(pipe.ScanSet.UnitInfo() * experiment.Layer() * anatomy.AreaMembership() * anatomy.LayerMembership() & key) == \
-               len(pipe.ScanSet.UnitInfo() & key), "AreaMembership decreases number of neurons"
+        # # make sure that including areas and layers does not decrease number of neurons
+        # assert len(pipe.ScanSet.Unit() * experiment.Layer() * anatomy.AreaMembership() * anatomy.LayerMembership() & key) == \
+        #        len(pipe.ScanSet.Unit() & key), "AreaMembership decreases number of neurons"
 
-        responses = (self.ResponseBlock & key).fetch1('responses')
+        responses = (self.ResponseBlock & key).fetch1('responses') if pipe_name != "neuropixel" else (self.ResponseBlockNpx & key).fetch1('responses')
         trials = Frame() * ConditionTier() * self.Input() * stimulus.Condition().proj('stimulus_type') & key
         hashes, trial_idxs, tiers, types, images = trials.fetch('condition_hash', 'trial_idx', 'tier',
                                                                 'stimulus_type', 'frame', order_by='row_id')
@@ -799,16 +872,60 @@ class InputResponse(dj.Computed, FilterMixin):
                 for k in row_info:
                     row_info[k] = row_info[k][valid]
             behavior = np.c_[pupil, dpupil, treadmill]
-
-        areas, layers, animal_ids, sessions, scan_idxs, unit_ids = (self.ResponseKeys
-                                                                    * anatomy.AreaMembership
-                                                                    * anatomy.LayerMembership & key).fetch('brain_area',
-                                                                                                           'layer',
-                                                                                                           'animal_id',
-                                                                                                           'session',
-                                                                                                           'scan_idx',
-                                                                                                           'unit_id',
-                                                                                                           order_by='col_id ASC')
+            
+        if pipe_name != "neuropixel":
+            areas, layers, animal_ids, sessions, scan_idxs, unit_ids = (self.ResponseKeys
+                                                                        * anatomy.AreaMembership
+                                                                        * anatomy.LayerMembership & key).fetch('brain_area',
+                                                                                                            'layer',
+                                                                                                            'animal_id',
+                                                                                                            'session',
+                                                                                                            'scan_idx',
+                                                                                                            'unit_id',
+                                                                                                            order_by='col_id ASC')
+        
+        else:
+            animal_ids, sessions, scan_idxs, unit_ids, electodes, depths, areas = (InputResponse.ResponseKeysNpx * \
+                                                                            ephys.CuratedClustering.Unit * \
+                                                                            ephys.Session * ephys_anatomy.UnitArea & \
+                                                                            key).fetch('animal_id',
+                                                                                        'session',
+                                                                                        'scan_idx',
+                                                                                        'unit_id',
+                                                                                        'electrode',
+                                                                                        'depth',
+                                                                                        'brain_area',
+                                                                                        order_by='col_id ASC')
+            probe_depth, theta = (ephys.Session * ephys.ProbeInsertion.Location & key).fetch1('depth', 'theta')
+            # Manually correct probe_depth for a few recordings with slightly off estimate, auto correction is pending
+            if ((float(probe_depth) - depths) < 0).any():
+                original_probe_depth = float(probe_depth)
+                probe_depth = depths.max()
+                assert (probe_depth - original_probe_depth) <= 200, 'Discrepancy between maximum unit depth and estimatd probe depth is larger than 200um. Manual correction terminated.'
+            # Calculate unit depths vertically from the cortex  
+            depths = (float(probe_depth) - depths) * np.cos(float(theta) * np.pi / 180)
+            label, z_start, z_end = (anatomy.Layer & 'layer in ("L1", "L2/3", "L4", "L5", "L6")').fetch('layer', 'z_start', 'z_end')
+            layers = []
+            for d in depths:
+                if d < z_start[0] or d >= z_end[-1]:
+                    layers.append('unset')
+                else:
+                    for l, zs, ze in zip(label, z_start, z_end):
+                        if d >= zs and d < ze:
+                            layers.append(l)
+            layers = np.array(layers)
+            
+            # layers = np.array(['unset'] * len(unit_ids))
+            # areas = np.array(['unknown'] * len(unit_ids))
+            # V1_LUT = {'29187_10_1': (95, 165),
+            #             '29189_16_1': (150, 190),
+            #             '29189_31_1': (130, 190),
+            #             '29767_9_1': (110, 180),
+            #             '29182_14_1': (115, 185)
+            #             }
+            # v1_elec_ids = V1_LUT['{}_{}_{}'.format(*key.values())]
+            # idxs = np.where((electrodes >= v1_elec_ids[0]) & (electrodes <= v1_elec_ids[1]))[0]
+            # areas[idxs] = np.array(['V1'] * len(idxs))
 
         assert len(np.unique(unit_ids)) == len(unit_ids), \
             'unit ids are not unique, do you have more than one preprocessing method?'
@@ -1015,23 +1132,30 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
 
     @property
     def key_source(self):
-        return InputResponse & pupil.FittedPupil & stimulus.BehaviorSync
+        return InputResponse & pupil.FittedPupil & [stimulus.BehaviorSync, stimulus.EphysSync]
 
     def make(self, scan_key):
         scan_key = {**scan_key, 'tracking_method': 2}
         log.info('Populating '+ pformat(scan_key))
         radius, xy, eye_time = self.load_eye_traces(scan_key)
-        frame_times = self.load_frame_times(scan_key)
-        behavior_clock = self.load_behavior_timing(scan_key)
+        
+        pipe = (fuse.ScanDone & scan_key).fetch1('pipe')
+        if pipe != "neuropixel":
+            frame_times = self.load_frame_times(scan_key)
+            behavior_clock = self.load_behavior_timing(scan_key)
 
-        if len(frame_times) - len(behavior_clock) != 0:
-            assert abs(len(frame_times) - len(behavior_clock)) < 2, 'Difference bigger than 2 time points'
-            l = min(len(frame_times), len(behavior_clock))
-            log.info('Frametimes and stimulus.BehaviorSync differ in length! Shortening it.')
-            frame_times = frame_times[:l]
-            behavior_clock = behavior_clock[:l]
+            if len(frame_times) - len(behavior_clock) != 0:
+                assert abs(len(frame_times) - len(behavior_clock)) < 2, 'Difference bigger than 2 time points'
+                l = min(len(frame_times), len(behavior_clock))
+                log.info('Frametimes and stimulus.BehaviorSync differ in length! Shortening it.')
+                frame_times = frame_times[:l]
+                behavior_clock = behavior_clock[:l]
 
-        fr2beh = NaNSpline(frame_times, behavior_clock, k=1, ext=3)
+            stim2beh = NaNSpline(frame_times, behavior_clock, k=1, ext=3)
+            
+        else: 
+            beh2stim_slope, beh2stim_intercept = (stimulus.EphysSync & scan_key).fetch('beh2stim_slope','beh2stim_intercept')
+            stim2beh = lambda stim: (stim - beh2stim_intercept) / beh2stim_slope
 
         duration, offset = map(float, (Preprocessing() & scan_key).fetch1('duration', 'offset'))
         sample_point = offset + duration / 2
@@ -1060,7 +1184,7 @@ class Eye(dj.Computed, FilterMixin, BehaviorMixin):
             return
 
         stimulus_onset = InputResponse.stimulus_onset(flip_times, duration)
-        t = fr2beh(stimulus_onset + sample_point)
+        t = stim2beh(stimulus_onset + sample_point)
         pupil = pupil_spline(t)
         dpupil = dpupil_spline(t)
         center = center_spline(t)
@@ -1089,22 +1213,30 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
     @property
     def key_source(self):
         rel = InputResponse
-        return rel & treadmill.Treadmill() & stimulus.BehaviorSync()
+        return rel & treadmill.Treadmill & [stimulus.BehaviorSync, stimulus.EphysSync]
 
     def make(self, scan_key):
         log.info('Populating\n' + pformat(scan_key))
         v, treadmill_time = self.load_treadmill_velocity(scan_key)
-        frame_times = self.load_frame_times(scan_key)
-        behavior_clock = self.load_behavior_timing(scan_key)
 
-        if len(frame_times) - len(behavior_clock) != 0:
-            assert abs(len(frame_times) - len(behavior_clock)) < 2, 'Difference bigger than 2 time points'
-            l = min(len(frame_times), len(behavior_clock))
-            log.warning('Frametimes and stimulus.BehaviorSync differ in length! Shortening it.')
-            frame_times = frame_times[:l]
-            behavior_clock = behavior_clock[:l]
+        pipe = (fuse.ScanDone & scan_key).fetch1('pipe')
+        if pipe != "neuropixel":
+            frame_times = self.load_frame_times(scan_key)
+            behavior_clock = self.load_behavior_timing(scan_key)
 
-        fr2beh = NaNSpline(frame_times, behavior_clock, k=1, ext=3)
+            if len(frame_times) - len(behavior_clock) != 0:
+                assert abs(len(frame_times) - len(behavior_clock)) < 2, 'Difference bigger than 2 time points'
+                l = min(len(frame_times), len(behavior_clock))
+                log.warning('Frametimes and stimulus.BehaviorSync differ in length! Shortening it.')
+                frame_times = frame_times[:l]
+                behavior_clock = behavior_clock[:l]
+
+            stim2beh = NaNSpline(frame_times, behavior_clock, k=1, ext=3)
+        
+        else:
+            beh2stim_slope, beh2stim_intercept = (stimulus.EphysSync & scan_key).fetch('beh2stim_slope','beh2stim_intercept')
+            stim2beh = lambda stim: (stim - beh2stim_intercept) / beh2stim_slope
+        
         duration, offset = map(float, (Preprocessing() & scan_key).fetch1('duration', 'offset'))
         sample_point = offset + duration / 2
 
@@ -1124,7 +1256,7 @@ class Treadmill(dj.Computed, FilterMixin, BehaviorMixin):
             return
 
         stimulus_onset = InputResponse.stimulus_onset(flip_times, duration)
-        tm = treadmill_spline(fr2beh(stimulus_onset + sample_point))
+        tm = treadmill_spline(stim2beh(stimulus_onset + sample_point))
         valid = ~np.isnan(tm)
         if not np.all(valid):
             log.warning('Found {} NaN trials. Setting to -1'.format((~valid).sum()))
